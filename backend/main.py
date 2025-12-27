@@ -8,7 +8,13 @@ import os
 app = FastAPI(title="Antigravity Spotify Connect")
 
 # Middleware
-app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
+is_production = os.getenv("K_SERVICE") is not None
+app.add_middleware(
+    SessionMiddleware, 
+    secret_key=settings.SECRET_KEY, 
+    https_only=is_production, 
+    same_site="none" if is_production else "lax"
+)
 
 origins = [
     "http://localhost:5173", 

@@ -15,4 +15,4 @@ ENV PYTHONPATH=/app
 # Run Gunicorn
 # Cloud Run injects PORT, default is 8080.
 # We bind to 0.0.0.0:$PORT
-CMD exec gunicorn --bind :$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker backend.main:app --timeout 0
+CMD exec gunicorn --bind :$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --forwarded-allow-ips="*" backend.main:app --timeout 0

@@ -1,0 +1,1 @@
+{"is_running": false, "status": "error", "progress": 0, "total": 3994, "current_artist": "Zaark", "logs": [], "results_count": 0, "rate_limit_until": 1766823522.8116877, "retry_after": 15, "error": "Persistent Rate Limit reached for artist 3XWZ58LIIXfjw9wMINncH6 after 3 attempts."}

@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+spotipy
+python-dotenv
+httpx
+itsdangerous
+google-cloud-storage
+gunicorn

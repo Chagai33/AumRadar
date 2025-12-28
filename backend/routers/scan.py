@@ -17,6 +17,11 @@ class ScanSettings(BaseModel):
     album_types: List[str] = ['album', 'single']
     refresh_artists: bool = False
     
+    # Advanced Filters
+    min_duration_sec: int = 90
+    max_duration_sec: int = 270
+    forbidden_keywords: List[str] = [" live ", "session", "לייב", "קאבר", "a capella", "acapella", "FSOE", "techno", "extended", "sped up", "speed up", "intro", "slow", "remaster", "instrumental"]
+    
 @router.get("/cache-info")
 def get_cache_info():
     return scanner.get_artists_cache_info()

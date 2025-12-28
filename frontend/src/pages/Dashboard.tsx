@@ -50,6 +50,13 @@ export const Dashboard: React.FC = () => {
     const [includeLiked, setIncludeLiked] = useState(false);
     const [minLikedSongs, setMinLikedSongs] = useState(1);
 
+    // Advanced Filters State
+    const [minDurationSec, setMinDurationSec] = useState(90);
+    const [maxDurationSec, setMaxDurationSec] = useState(270); // Default 4:30
+    const [forbiddenKeywords, setForbiddenKeywords] = useState(
+        "live\nsession\nלייב\nקאבר\na capella\nacapella\nFSOE\ntechno\nextended\nsped up\nspeed up\nintro\nslow\nremaster\ninstrumental"
+    );
+
     // Poll for status
     useEffect(() => {
         // Initial cache info check
@@ -99,7 +106,11 @@ export const Dashboard: React.FC = () => {
                 include_liked_songs: includeLiked,
                 min_liked_songs: minLikedSongs,
                 album_types: albumTypes,
-                refresh_artists: refreshArtists
+                refresh_artists: refreshArtists,
+                // New Advanced Filters
+                min_duration_sec: minDurationSec,
+                max_duration_sec: maxDurationSec,
+                forbidden_keywords: forbiddenKeywords.split('\n').map(k => k.trim()).filter(k => k.length > 0)
             });
 
         } catch (e: any) {
@@ -296,6 +307,50 @@ export const Dashboard: React.FC = () => {
                                                 />
                                             </div>
                                         )}
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Advanced Filters */}
+                            <div className="md:col-span-2 border-t border-[#333] pt-6 mt-2">
+                                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4 block flex items-center gap-2">
+                                    <Filter className="w-4 h-4" /> Advanced Filters
+                                </label>
+
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                    <div>
+                                        <label className="text-xs text-gray-400 block mb-2">Track Duration (Seconds)</label>
+                                        <div className="flex items-center gap-4">
+                                            <div className="flex-1">
+                                                <span className="text-[10px] text-gray-500 uppercase block mb-1">Min</span>
+                                                <input
+                                                    type="number"
+                                                    value={minDurationSec}
+                                                    onChange={e => setMinDurationSec(Number(e.target.value))}
+                                                    className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-sm focus:border-[#1DB954] outline-none"
+                                                />
+                                            </div>
+                                            <div className="flex-1">
+                                                <span className="text-[10px] text-gray-500 uppercase block mb-1">Max</span>
+                                                <input
+                                                    type="number"
+                                                    value={maxDurationSec}
+                                                    onChange={e => setMaxDurationSec(Number(e.target.value))}
+                                                    className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-sm focus:border-[#1DB954] outline-none"
+                                                />
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs text-gray-400 block mb-2">Forbidden Keywords (One per line)</label>
+                                        <textarea
+                                            value={forbiddenKeywords}
+                                            onChange={e => setForbiddenKeywords(e.target.value)}
+                                            rows={4}
+                                            className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-xs font-mono text-gray-300 focus:border-[#1DB954] outline-none resize-none"
+                                            placeholder="live&#10;remix&#10;..."
+                                        />
                                     </div>
                                 </div>
                             </div>

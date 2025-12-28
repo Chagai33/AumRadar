@@ -52,16 +52,24 @@ def get_normalized_key(track):
     artists = [artist['name'].lower().strip() for artist in track.get('artists', [])][:2]
     return (normalized_name, tuple(artists))
 
-def filter_tracks(tracks, no_filter_artists):
+def filter_tracks(tracks, no_filter_artists, filter_options={}):
     """
-    Exact copy of legacy filtering logic.
+    Exact copy of legacy filtering logic., but dynamic.
     """
     filtered_tracks = []
     excluded_tracks = []
     basic_tracks = []
-    forbidden_words = [" live ", "session", "לייב", "קאבר", "a capella", "acapella", "FSOE",
+    
+    # Defaults
+    min_ms = filter_options.get('min_duration_ms', 90000)
+    max_ms = filter_options.get('max_duration_ms', 270000)
+    
+    default_forbidden = [" live ", "session", "לייב", "קאבר", "a capella", "acapella", "FSOE",
                        "techno", "extended", "sped up", "speed up", "intro", "slow", "remaster", "instrumental"]
-
+    forbidden_words = filter_options.get('forbidden_keywords', default_forbidden)
+    if not forbidden_words: forbidden_words = default_forbidden # Handle empty list if accidental? No, allow empty list to disable filter.
+    if 'forbidden_keywords' in filter_options: # If explicit list passed
+         forbidden_words = filter_options['forbidden_keywords']
 
     for track in tracks:
         name = track['name'].lower()
@@ -76,11 +84,13 @@ def filter_tracks(tracks, no_filter_artists):
             continue
         
         if any(forbidden in name for forbidden in forbidden_words):
+            log_message(f"DEBUG: Skipping '{track['name']}' - Keyword match")
             excluded_tracks.append(track)
             continue
         
-        # Duration check: 1:30 (90s) to 4:30 (270s)
-        if duration_ms < 90000 or duration_ms > 270000:
+        # Duration check
+        if duration_ms < min_ms or duration_ms > max_ms:
+            log_message(f"DEBUG: Skipping '{track['name']}' (Time: {duration_ms/1000}s) - Outside {min_ms/1000}s-{max_ms/1000}s range")
             excluded_tracks.append(track)
             continue
             
@@ -217,12 +227,15 @@ async def get_artist_new_release_ids(sp, artist, exclusion_artists, start_date, 
                 
             if start_date <= r_date <= end_date:
                 new_release_ids.append(album['id'])
+                log_message(f"DEBUG: Found '{album['name']}' ({r_date}) - MATCH!")
+            else:
+                 log_message(f"DEBUG: Skipped '{album['name']}' ({r_date}) - Outside {start_date} <-> {end_date}")
         except ValueError:
             continue
             
     return (new_release_ids, 1)
 
-async def process_albums_batch_with_filter(sp, album_ids, no_filter_artists, on_rate_limit=None):
+async def process_albums_batch_with_filter(sp, album_ids, no_filter_artists, on_rate_limit=None, filter_options={}):
     """
     Step 2: Batch fetch full album details (tracks) and apply filters.
     """
@@ -240,7 +253,7 @@ async def process_albums_batch_with_filter(sp, album_ids, no_filter_artists, on_
         if tracks:
             # We need to filter. 
             # Note: tracks returned by get_tracks... already have album metadata injected.
-            f, e = filter_tracks(tracks, no_filter_artists)
+            f, e = filter_tracks(tracks, no_filter_artists, filter_options)
             filtered_total.extend(f)
             excluded_total.extend(e)
             

@@ -203,6 +203,13 @@ class AdvancedEngine:
             
             results_buffer = []
 
+            # Filter Config
+            filter_config = {
+                "min_duration_ms": settings.get('min_duration_sec', 90) * 1000,
+                "max_duration_ms": settings.get('max_duration_sec', 270) * 1000,
+                "forbidden_keywords": settings.get('forbidden_keywords', [])
+            }
+
             # Define rate limit callback
             def on_rate_limit(seconds):
                 if seconds > 300: # If wait is more than 5 minutes
@@ -275,7 +282,7 @@ class AdvancedEngine:
                     batch = pending_album_ids[:20]
                     pending_album_ids = pending_album_ids[20:]
                     
-                    kept, excluded = await process_albums_batch_with_filter(sp, batch, [], on_rate_limit=on_rate_limit)
+                    kept, excluded = await process_albums_batch_with_filter(sp, batch, [], filter_options=filter_config, on_rate_limit=on_rate_limit)
                     if kept:
                         results_buffer.extend(kept)
                 
@@ -285,7 +292,7 @@ class AdvancedEngine:
             
             # 3. Process remaining albums
             if pending_album_ids:
-                 kept, excluded = await process_albums_batch_with_filter(sp, pending_album_ids, [], on_rate_limit=on_rate_limit)
+                 kept, excluded = await process_albums_batch_with_filter(sp, pending_album_ids, [], filter_options=filter_config, on_rate_limit=on_rate_limit)
                  if kept:
                     results_buffer.extend(kept)
                 

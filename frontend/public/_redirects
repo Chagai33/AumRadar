@@ -1,1 +1,14 @@
-/* /index.html 200
+# Proxy /api requests to Google Cloud Run
+/api/*  https://aumradar-838002431698.europe-west1.run.app/api/:splat  200
+
+# Proxy auth endpoints explicitly if they are not under /api (checked router, they are under router but router prefix?)
+# auth.py router is included WITHOUT prefix in main.py? Let's check main.py.
+# If auth is at root (/login, /logout), we need to proxy those too.
+
+/login  https://aumradar-838002431698.europe-west1.run.app/login  200
+/logout  https://aumradar-838002431698.europe-west1.run.app/logout  200
+/callback  https://aumradar-838002431698.europe-west1.run.app/callback  200
+/me  https://aumradar-838002431698.europe-west1.run.app/me  200
+
+# SPA Fallback (Must be last)
+/*  /index.html  200

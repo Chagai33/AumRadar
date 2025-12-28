@@ -17,7 +17,9 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType>({} as AuthContextType);
 
 // Configure Axios defaults
-axios.defaults.baseURL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8888';
+// In production, we use relative paths so Netlify proxies them (First-Party Cookies!)
+// In development, we go direct to Python server.
+axios.defaults.baseURL = import.meta.env.DEV ? 'http://127.0.0.1:8888' : '';
 axios.defaults.withCredentials = true; // IMPORTANT for cookies
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {

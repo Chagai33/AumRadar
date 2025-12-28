@@ -8,12 +8,13 @@ import os
 app = FastAPI(title="Antigravity Spotify Connect")
 
 # Middleware
-is_production = os.getenv("K_SERVICE") is not None
+# Always force Secure and SameSite=None. This is required for cross-domain auth (Netlify <-> Cloud Run)
+# and is verified to work on localhost in modern browsers.
 app.add_middleware(
     SessionMiddleware, 
     secret_key=settings.SECRET_KEY, 
-    https_only=is_production, 
-    same_site="none" if is_production else "lax"
+    https_only=True, 
+    same_site="none"
 )
 
 origins = [

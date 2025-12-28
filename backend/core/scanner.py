@@ -170,6 +170,7 @@ class AdvancedEngine:
                      self.state["status"] = "fetching_artists" # generic status
                      self._save_state()
                      followed_artists = await self.fetch_all_followed_artists(sp)
+                     self._save_artists_cache(followed_artists)
 
             liked_artists = []
             if include_liked:

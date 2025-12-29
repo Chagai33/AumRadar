@@ -239,6 +239,7 @@ class AdvancedEngine:
             executor = ThreadPoolExecutor(max_workers=5)
             
             chunk_size = 20
+            self.log(f"DEBUG: Starting scan loop for {len(artists)} artists")
             
             for i in range(0, len(artists), chunk_size):
                 if not self.state["is_running"]: break
@@ -284,19 +285,22 @@ class AdvancedEngine:
                 await asyncio.sleep(0.5)
                 
             # Finalize
-            self.state["status"] = "completed"
-            self.state["is_running"] = False
-            
-            # Save final results to disk
+            self.log(f"DEBUG: Loop finished. Saving {len(results_buffer)} results.")
             storage.save_json(RESULTS_FILE, results_buffer)
-                
+            
+            self.state["results_count"] = len(results_buffer)
+            self.state["status"] = "completed"
+            
         except Exception as e:
             self.state["status"] = "error"
             self.state["error"] = str(e)
-            self.state["is_running"] = False
             self.log(f"CRITICAL SCAN ERROR: {e}")
-            
-        self._save_state()
+            import traceback
+            traceback.print_exc()
+        finally:
+            self.log("DEBUG: scan_process cleanup (finally block).")
+            self.state["is_running"] = False
+            self._save_state()
 
     def get_status(self):
         # Dynamic status check

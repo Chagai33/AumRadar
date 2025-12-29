@@ -1,11 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
-import { LogOut, Search, Calendar, Play, ListMusic, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save } from 'lucide-react';
+import { LogOut, Search, Calendar, Play, ListMusic, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save, Layers, X, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
 
 // Types updated to match new backend
+interface AlbumGroup {
+    key: string;
+    artist: string;
+    album: string;
+    tracks: any[];
+    selected: boolean;
+}
+
 interface Track {
     id: string;
     name: string;
@@ -50,6 +58,15 @@ export const Dashboard: React.FC = () => {
     const [includeLiked, setIncludeLiked] = useState(false);
     const [minLikedSongs, setMinLikedSongs] = useState(1);
 
+    // Album Grouping State
+    const [showAlbumModal, setShowAlbumModal] = useState(false);
+    const [detectedAlbums, setDetectedAlbums] = useState<AlbumGroup[]>([]);
+    const [detectedSingles, setDetectedSingles] = useState<Track[]>([]);
+
+    // Search and Restore State
+    const [searchTerm, setSearchTerm] = useState('');
+    const [originalResults, setOriginalResults] = useState<Track[]>([]);
+
     // Advanced Filters State
     const [minDurationSec, setMinDurationSec] = useState(90);
     const [maxDurationSec, setMaxDurationSec] = useState(270); // Default 4:30
@@ -71,6 +88,7 @@ export const Dashboard: React.FC = () => {
                 if (data.status === 'completed' || data.results_count > results.length) {
                     const res = await axios.get('/api/results');
                     setResults(res.data);
+                    setOriginalResults(res.data);
                 }
             } catch (e) {
                 console.error("Status poll failed", e);
@@ -141,10 +159,36 @@ export const Dashboard: React.FC = () => {
         await axios.post('/api/stop');
     };
 
+    const handleRestoreResults = () => {
+        if (confirm("Restore original scan results? This will undo album organization.")) {
+            setResults(originalResults);
+        }
+    };
+
     const handleExport = async () => {
         if (results.length === 0) return;
 
-        const name = prompt("Enter a name for your new playlist:", "Antigravity Releases");
+        // Calculate date range string
+        let startD = new Date();
+        let endD = new Date();
+
+        if (dateOption === 'last7') {
+            startD.setDate(endD.getDate() - 7);
+        } else if (dateOption === 'last30') {
+            startD.setDate(endD.getDate() - 30);
+        } else if (dateOption === 'custom' && customStart && customEnd) {
+            startD = new Date(customStart);
+            endD = new Date(customEnd);
+        }
+
+        const fmt = (d: Date) => {
+            return `${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear().toString().slice(-2)}`;
+        };
+
+        const dateStr = `${fmt(startD)} - ${fmt(endD)}`;
+        const defaultName = `NewReleases ${dateStr}`;
+
+        const name = prompt("Enter a name for your new playlist:", defaultName);
         if (!name) return;
 
         try {
@@ -162,6 +206,81 @@ export const Dashboard: React.FC = () => {
             alert("Export error: " + (e.response?.data?.message || e.message));
         }
     };
+
+    const handleAnalyzeAlbums = () => {
+        const groups: { [key: string]: any[] } = {};
+
+        // 1. Group by Artist + Album
+        results.forEach(track => {
+            const albumName = track.album?.name || 'Unknown';
+            const artistName = track.artists && track.artists[0] ? track.artists[0].name : 'Unknown';
+            const key = `${artistName}::${albumName}`;
+
+            if (!groups[key]) groups[key] = [];
+            groups[key].push(track);
+        });
+
+        const albums: AlbumGroup[] = [];
+        const singles: Track[] = [];
+
+        // 2. Filter Groups >= 4
+        Object.entries(groups).forEach(([key, tracks]) => {
+            if (tracks.length >= 4) {
+                const [artist, album] = key.split('::');
+                // Try to sort using track number if available, else original index in results (preserved by push order)
+                // Note: The tracks pushed are from 'results', so they are somewhat ordered by artist scan time.
+                // We should rely on spotify metadata track_number if possible, but our current Track interface might not show it.
+                // Let's assume we trust the scan order or better yet, verify track_number exists? 
+                // In engine.py we inject full item, so track_number exists in JSON even if not in TS interface.
+                // Let's force cast to any to access track_number
+                tracks.sort((a, b) => ((a as any).track_number || 0) - ((b as any).track_number || 0));
+
+                albums.push({
+                    key,
+                    artist,
+                    album,
+                    tracks,
+                    selected: true
+                });
+            } else {
+                singles.push(...tracks);
+            }
+        });
+
+        if (albums.length === 0) {
+            alert("No albums (groups of 4+ tracks) detected.");
+            return;
+        }
+
+        setDetectedAlbums(albums);
+        setDetectedSingles(singles);
+        setShowAlbumModal(true);
+    };
+
+    const handleApplyAlbumOrganization = () => {
+        let newOrder = [...detectedSingles];
+        const selectedAlbums = detectedAlbums.filter(a => a.selected);
+
+        selectedAlbums.forEach(group => {
+            newOrder = [...newOrder, ...group.tracks];
+        });
+
+        if (confirm(`Reordered list.\n${selectedAlbums.length} albums moved to bottom.\n${detectedAlbums.length - selectedAlbums.length} albums removed.\nTotal tracks: ${newOrder.length} (was ${results.length}).\n\nApply?`)) {
+            setResults(newOrder);
+            setShowAlbumModal(false);
+        }
+    };
+
+    const toggleAlbumSelection = (key: string) => {
+        setDetectedAlbums(prev => prev.map(a =>
+            a.key === key ? { ...a, selected: !a.selected } : a
+        ));
+    };
+
+    const filteredResults = results.filter(r =>
+        r.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        r.artists.some(a => a.name.toLowerCase().includes(searchTerm.toLowerCase()))
+    );
 
     const percent = scanStatus.total > 0 ? (scanStatus.progress / scanStatus.total) * 100 : 0;
 
@@ -460,20 +579,56 @@ export const Dashboard: React.FC = () => {
                 )}
 
                 {/* Results Grid Header */}
-                <div className="flex items-center justify-between mb-6">
-                    <h2 className="text-2xl font-bold flex items-center gap-2">
-                        Found Releases
-                        <span className="text-sm font-normal bg-[#333] text-white px-2 py-0.5 rounded-full ml-2">{results.length}</span>
-                    </h2>
+                <div className="flex flex-col gap-4 mb-6">
+                    <div className="flex items-center justify-between">
+                        <h2 className="text-2xl font-bold flex items-center gap-2">
+                            Found Releases
+                            <span className="text-sm font-normal bg-[#333] text-white px-2 py-0.5 rounded-full ml-2">
+                                {filteredResults.length} {filteredResults.length !== results.length && <span className="text-gray-500">/ {results.length}</span>}
+                            </span>
+                        </h2>
 
-                    {results.length > 0 && !scanStatus.is_running && (
-                        <button
-                            onClick={handleExport}
-                            className="flex items-center gap-2 bg-[#282828] hover:bg-[#333] border border-gray-600 text-white px-4 py-2 rounded-full text-sm font-bold transition-all"
-                        >
-                            <Save className="w-4 h-4 text-[#1DB954]" />
-                            Export to Playlist
-                        </button>
+                        {results.length > 0 && !scanStatus.is_running && (
+                            <div className="flex gap-2">
+                                {results.length !== originalResults.length && (
+                                    <button
+                                        onClick={handleRestoreResults}
+                                        className="flex items-center gap-2 text-red-400 border border-red-900/50 hover:bg-red-900/20 px-3 py-1.5 rounded-full text-xs font-bold transition-all"
+                                        title="Undo album grouping and restore original scan"
+                                    >
+                                        <RefreshCw className="w-3 h-3" />
+                                        Undo Changes
+                                    </button>
+                                )}
+                                <button
+                                    onClick={handleAnalyzeAlbums}
+                                    className="flex items-center gap-2 bg-[#282828] hover:bg-[#333] border border-gray-600 text-white px-4 py-2 rounded-full text-sm font-bold transition-all"
+                                >
+                                    <Layers className="w-4 h-4 text-blue-400" />
+                                    Organize Albums
+                                </button>
+                                <button
+                                    onClick={handleExport}
+                                    className="flex items-center gap-2 bg-[#282828] hover:bg-[#333] border border-gray-600 text-white px-4 py-2 rounded-full text-sm font-bold transition-all"
+                                >
+                                    <Save className="w-4 h-4 text-[#1DB954]" />
+                                    Export
+                                </button>
+                            </div>
+                        )}
+                    </div>
+
+                    {results.length > 0 && (
+                        <div className="relative">
+                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                            <input
+                                type="text"
+                                placeholder="Filter by artist or track..."
+                                value={searchTerm}
+                                onChange={e => setSearchTerm(e.target.value)}
+                                className="w-full bg-[#181818] border border-[#333] rounded-lg pl-10 pr-4 py-2 text-sm text-gray-200 focus:border-[#1DB954] outline-none"
+                            />
+                        </div>
                     )}
                 </div>
 
@@ -485,7 +640,10 @@ export const Dashboard: React.FC = () => {
                 )}
 
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
-                    {results.map((track, i) => (
+                    {filteredResults.length === 0 && results.length > 0 && (
+                        <p className="col-span-full text-center text-gray-500 py-10">No matches found for "{searchTerm}"</p>
+                    )}
+                    {filteredResults.map((track, i) => (
                         <motion.div
                             key={track.id + i}
                             initial={{ opacity: 0, scale: 0.9 }}
@@ -524,6 +682,79 @@ export const Dashboard: React.FC = () => {
                         </motion.div>
                     ))}
                 </div>
+                {/* Album Organization Modal */}
+                <AnimatePresence>
+                    {showAlbumModal && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+                        >
+                            <div className="bg-[#181818] border border-gray-800 rounded-xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl">
+                                <div className="p-6 border-b border-gray-800 flex justify-between items-center">
+                                    <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                                        <Layers className="w-5 h-5 text-blue-400" />
+                                        Organize Detected Albums
+                                    </h3>
+                                    <button onClick={() => setShowAlbumModal(false)} className="text-gray-400 hover:text-white">
+                                        <X className="w-5 h-5" />
+                                    </button>
+                                </div>
+
+                                <div className="p-6 overflow-y-auto flex-1 text-gray-300 space-y-4">
+                                    <div className="bg-blue-900/20 border border-blue-900/50 p-4 rounded-lg text-sm mb-4">
+                                        <p>Found <strong>{detectedAlbums.length}</strong> albums with 4+ tracks.</p>
+                                        <p>Selected albums will be moved to the bottom of the playlist.</p>
+                                        <p>Unselected albums will be <strong>removed</strong> from the results.</p>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        {detectedAlbums.map(group => (
+                                            <div
+                                                key={group.key}
+                                                className={`flex items-center justify-between p-3 rounded-lg border cursor-pointer transition-all ${group.selected
+                                                    ? 'bg-[#282828] border-gray-600'
+                                                    : 'bg-red-900/10 border-red-900/30 opacity-60'
+                                                    }`}
+                                                onClick={() => toggleAlbumSelection(group.key)}
+                                            >
+                                                <div className="flex items-center gap-3">
+                                                    <div className={`w-5 h-5 rounded border flex items-center justify-center ${group.selected ? 'bg-blue-500 border-blue-500' : 'border-gray-500'
+                                                        }`}>
+                                                        {group.selected && <Check className="w-3 h-3 text-white" />}
+                                                    </div>
+                                                    <div>
+                                                        <div className="font-bold text-white">{group.album}</div>
+                                                        <div className="text-xs text-gray-400">{group.artist} • {group.tracks.length} tracks</div>
+                                                    </div>
+                                                </div>
+                                                <div className="text-xs font-mono text-gray-500">
+                                                    {group.selected ? 'KEEP & MOVE' : 'REMOVE'}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="p-6 border-t border-gray-800 flex justify-end gap-3">
+                                    <button
+                                        onClick={() => setShowAlbumModal(false)}
+                                        className="px-4 py-2 rounded-lg font-bold text-gray-400 hover:text-white hover:bg-[#333] transition-all"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        onClick={handleApplyAlbumOrganization}
+                                        className="px-6 py-2 rounded-lg font-bold bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-900/20 transition-all"
+                                    >
+                                        Apply Changes ({detectedAlbums.filter(a => a.selected).length} Albums)
+                                    </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
             </main>
         </div>
     );

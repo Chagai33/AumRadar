@@ -142,7 +142,10 @@ class AdvancedEngine:
                 
         return filtered_artists
 
-    async def scan_process(self, sp, settings):
+    async def scan_process(self, sp, settings, app_sp=None):
+        # Use App Client for heavy lifting if provided, else fallback to User Client
+        work_sp = app_sp if app_sp else sp
+        
         self.state["is_running"] = True
         self.state["status"] = "initializing"
         self._save_state()
@@ -237,7 +240,7 @@ class AdvancedEngine:
                     
                     try:
                         # Step 1: Just get IDs
-                        new_ids, _ = await get_artist_new_release_ids(sp, artist, [], start_date, end_date, include_groups=include_groups_str, on_rate_limit=on_rate_limit)
+                        new_ids, _ = await get_artist_new_release_ids(work_sp, artist, [], start_date, end_date, include_groups=include_groups_str, on_rate_limit=on_rate_limit)
                         return new_ids
                     except Exception as e:
                         str_e = str(e)
@@ -283,7 +286,7 @@ class AdvancedEngine:
                     batch = pending_album_ids[:20]
                     pending_album_ids = pending_album_ids[20:]
                     
-                    kept, excluded = await process_albums_batch_with_filter(sp, batch, [], filter_options=filter_config, on_rate_limit=on_rate_limit)
+                    kept, excluded = await process_albums_batch_with_filter(work_sp, batch, [], filter_options=filter_config, on_rate_limit=on_rate_limit)
                     if kept:
                         results_buffer.extend(kept)
                 
@@ -293,7 +296,7 @@ class AdvancedEngine:
             
             # 3. Process remaining albums
             if pending_album_ids:
-                 kept, excluded = await process_albums_batch_with_filter(sp, pending_album_ids, [], filter_options=filter_config, on_rate_limit=on_rate_limit)
+                 kept, excluded = await process_albums_batch_with_filter(work_sp, pending_album_ids, [], filter_options=filter_config, on_rate_limit=on_rate_limit)
                  if kept:
                     results_buffer.extend(kept)
                 

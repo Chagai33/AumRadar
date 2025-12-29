@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import RedirectResponse, JSONResponse
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
 from ..config import settings
 import time
 
@@ -15,6 +15,23 @@ def get_spotify_oauth():
         scope=settings.SCOPE,
         cache_handler=None, # We handle caching in session
         show_dialog=True
+    )
+
+def get_app_client():
+    """
+    Returns a Spotify client authenticated with Client Credentials (App Token).
+    Used for scanning albums/tracks where user context is not needed.
+    Higher rate limits!
+    """
+    client_credentials_manager = SpotifyClientCredentials(
+        client_id=settings.CLIENT_ID, 
+        client_secret=settings.CLIENT_SECRET
+    )
+    return spotipy.Spotify(
+        client_credentials_manager=client_credentials_manager,
+        requests_timeout=20,
+        retries=0,
+        status_retries=0
     )
 
 @router.get("/login")

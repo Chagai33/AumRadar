@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
-import { LogOut, Search, Calendar, Play, ListMusic, Filter, Clock, AlertTriangle, Settings, RefreshCw } from 'lucide-react';
+import { LogOut, Search, Calendar, Play, ListMusic, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
 
@@ -45,7 +45,7 @@ export const Dashboard: React.FC = () => {
     const [refreshArtists, setRefreshArtists] = useState(false);
 
     // Scan Settings State
-    const [albumTypes, setAlbumTypes] = useState<string[]>(['album', 'single']);
+    const [albumTypes, setAlbumTypes] = useState<string[]>(['single']);
     const [includeFollowed, setIncludeFollowed] = useState(true);
     const [includeLiked, setIncludeLiked] = useState(false);
     const [minLikedSongs, setMinLikedSongs] = useState(1);
@@ -139,6 +139,28 @@ export const Dashboard: React.FC = () => {
 
     const handleStopScan = async () => {
         await axios.post('/api/stop');
+    };
+
+    const handleExport = async () => {
+        if (results.length === 0) return;
+
+        const name = prompt("Enter a name for your new playlist:", "Antigravity Releases");
+        if (!name) return;
+
+        try {
+            const uris = results.map(r => r.uri);
+            const res = await axios.post('/api/export', { name, uris });
+
+            if (res.data.status === 'success') {
+                if (confirm("Playlist created successfully! Open in Spotify?")) {
+                    window.open(res.data.playlist_url, '_blank');
+                }
+            } else {
+                alert("Export failed: " + res.data.message);
+            }
+        } catch (e: any) {
+            alert("Export error: " + (e.response?.data?.message || e.message));
+        }
     };
 
     const percent = scanStatus.total > 0 ? (scanStatus.progress / scanStatus.total) * 100 : 0;
@@ -437,12 +459,22 @@ export const Dashboard: React.FC = () => {
                     </section>
                 )}
 
-                {/* Results Grid */}
+                {/* Results Grid Header */}
                 <div className="flex items-center justify-between mb-6">
                     <h2 className="text-2xl font-bold flex items-center gap-2">
                         Found Releases
                         <span className="text-sm font-normal bg-[#333] text-white px-2 py-0.5 rounded-full ml-2">{results.length}</span>
                     </h2>
+
+                    {results.length > 0 && !scanStatus.is_running && (
+                        <button
+                            onClick={handleExport}
+                            className="flex items-center gap-2 bg-[#282828] hover:bg-[#333] border border-gray-600 text-white px-4 py-2 rounded-full text-sm font-bold transition-all"
+                        >
+                            <Save className="w-4 h-4 text-[#1DB954]" />
+                            Export to Playlist
+                        </button>
+                    )}
                 </div>
 
                 {results.length === 0 && !scanStatus.is_running && (

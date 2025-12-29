@@ -130,18 +130,17 @@ def _get_artist_albums_sync(sp, artist_id, include_groups='album,single', on_rat
         return sp.artist_albums(artist_id, include_groups=include_groups, limit=5)['items']
     except SpotifyException as e:
         if e.http_status == 429:
-            if attempt > 3:
-                err_msg = f"Persistent Rate Limit reached for artist {artist_id} after 3 attempts."
+            if attempt > 10: # Increased retry limit
+                err_msg = f"Persistent Rate Limit reached for artist {artist_id} after 10 attempts."
                 log_message(err_msg)
                 raise Exception(err_msg)
 
-            retry_after = int(e.headers.get('Retry-After', 5)) # Default to 5s if missing
+            header_val = e.headers.get('Retry-After')
+            # If header missing, use progressive backoff: 5, 7, 9...
+            retry_after = int(header_val) if header_val else (5 + attempt * 2)
+            
             if retry_after < 5: retry_after = 5 # Force minimum 5s backoff
             
-            # Simple exponential backoff for persistent undefined limits
-            if retry_after == 5:
-                retry_after = 5 * attempt 
-
             log_message(f"Rate Limit: sleeping {retry_after}s (attempt {attempt})")
             
             if on_rate_limit:

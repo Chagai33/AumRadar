@@ -3,6 +3,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
 from ..config import settings
+from ..core.automation import automation_manager
 import time
 
 router = APIRouter()
@@ -50,6 +51,9 @@ def callback(code: str, request: Request):
         
     # Store token in session
     request.session["token_info"] = token_info
+    
+    # Save for Automation (Headless)
+    automation_manager.save_tokens(token_info)
     
     # Redirect to Frontend (assuming running on port 5173)
     return RedirectResponse(f"{settings.FRONTEND_URL}/dashboard")

@@ -87,9 +87,36 @@ export const Dashboard: React.FC = () => {
     // Advanced Filters State
     const [minDurationSec, setMinDurationSec] = useState(90);
     const [maxDurationSec, setMaxDurationSec] = useState(270); // Default 4:30
-    const [forbiddenKeywords, setForbiddenKeywords] = useState(
-        "live\nsession\nלייב\nקאבר\na capella\nacapella\nFSOE\ntechno\nextended\nsped up\nspeed up\nintro\nslow\nremaster\ninstrumental"
-    );
+    const [forbiddenKeywords, setForbiddenKeywords] = useState('live\nsession\nremix\n');
+    const [excludedArtists, setExcludedArtists] = useState('');
+
+    // Automation State
+    const [showAutoSettings, setShowAutoSettings] = useState(false);
+    const [autoEnabled, setAutoEnabled] = useState(false);
+    const [autoDay, setAutoDay] = useState('friday');
+    const [autoTime, setAutoTime] = useState('10:00');
+
+    // Load Automation Config
+    useEffect(() => {
+        axios.get('/api/automation/config').then(res => {
+            const data = res.data;
+            if (data) {
+                if (data.enabled !== undefined) setAutoEnabled(data.enabled);
+                if (data.run_day) setAutoDay(data.run_day);
+                if (data.run_time) setAutoTime(data.run_time);
+
+                // Pre-fill Advanced Filters if saved
+                if (data.settings) {
+                    if (data.settings.exclude_artists) {
+                        setExcludedArtists(data.settings.exclude_artists.join('\n'));
+                    }
+                    if (data.settings.forbidden_keywords) {
+                        setForbiddenKeywords(data.settings.forbidden_keywords.join('\n'));
+                    }
+                }
+            }
+        }).catch(e => console.error("Auto config load error", e));
+    }, []);
 
     // Poll for status
     useEffect(() => {
@@ -145,7 +172,8 @@ export const Dashboard: React.FC = () => {
                 // New Advanced Filters
                 min_duration_sec: minDurationSec,
                 max_duration_sec: maxDurationSec,
-                forbidden_keywords: forbiddenKeywords.split('\n').map(k => k.trim()).filter(k => k.length > 0)
+                forbidden_keywords: forbiddenKeywords.split('\n').map(k => k.trim()).filter(k => k.length > 0),
+                exclude_artists: excludedArtists.split('\n').map(s => s.trim()).filter(s => s.length > 0)
             });
 
         } catch (e: any) {
@@ -323,6 +351,9 @@ export const Dashboard: React.FC = () => {
                     <div className="text-sm font-medium text-gray-300 hidden md:block">
                         {user?.display_name}
                     </div>
+                    <button onClick={() => setShowAutoSettings(true)} className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] mr-2" title="Automation Settings">
+                        <Calendar className="w-5 h-5" />
+                    </button>
                     <button onClick={logout} className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-white">
                         <LogOut className="w-5 h-5" />
                     </button>
@@ -384,6 +415,36 @@ export const Dashboard: React.FC = () => {
                         </motion.div>
                     )}
                 </AnimatePresence>
+
+                {/* Completion Banner */}
+                {scanStatus.status === 'completed' && !scanStatus.is_running && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="bg-green-900/20 border border-[#1DB954]/40 p-4 rounded-xl mb-8 flex items-center justify-between shadow-lg backdrop-blur-sm"
+                    >
+                        <div className="flex items-center gap-3">
+                            <div className="bg-[#1DB954]/20 p-2 rounded-full">
+                                <Check className="w-5 h-5 text-[#1DB954]" />
+                            </div>
+                            <div>
+                                <h3 className="font-bold text-white text-lg">Scan Completed</h3>
+                                <p className="text-gray-400 text-sm">
+                                    {results.length === 0
+                                        ? "No new releases found in the selected date range."
+                                        : `Found ${results.length} new releases.`
+                                    }
+                                </p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => setScanStatus(prev => ({ ...prev, status: 'idle' }))}
+                            className="bg-[#282828] hover:bg-[#333] text-white px-3 py-1 rounded text-sm transition-colors border border-gray-700"
+                        >
+                            Dismiss
+                        </button>
+                    </motion.div>
+                )}
 
                 {/* Error Banner */}
                 {scanStatus.error && (
@@ -515,6 +576,17 @@ export const Dashboard: React.FC = () => {
                                             placeholder="live&#10;remix&#10;..."
                                         />
                                     </div>
+
+                                    <div className="md:col-span-2 mt-4 pt-4 border-t border-[#333]">
+                                        <label className="text-xs text-gray-400 block mb-2">Excluded Artists (One Name or ID per line)</label>
+                                        <textarea
+                                            value={excludedArtists}
+                                            onChange={e => setExcludedArtists(e.target.value)}
+                                            rows={3}
+                                            className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-xs font-mono text-gray-300 focus:border-[#1DB954] outline-none resize-none"
+                                            placeholder="Justin Bieber&#10;6eUKZXaKkcviH0Ku9w2n3V&#10;..."
+                                        />
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -608,6 +680,25 @@ export const Dashboard: React.FC = () => {
                             <span className="text-sm font-normal bg-[#333] text-white px-2 py-0.5 rounded-full ml-2">
                                 {filteredResults.length} {filteredResults.length !== results.length && <span className="text-gray-500">/ {results.length}</span>}
                             </span>
+                            {results.length > 0 && (
+                                <button
+                                    onClick={() => {
+                                        const allVisible = filteredResults.map(r => r.uri);
+                                        const newSet = new Set(selectedUris);
+                                        const allSelected = allVisible.every(uri => newSet.has(uri));
+
+                                        if (allSelected) {
+                                            allVisible.forEach(uri => newSet.delete(uri));
+                                        } else {
+                                            allVisible.forEach(uri => newSet.add(uri));
+                                        }
+                                        setSelectedUris(newSet);
+                                    }}
+                                    className="text-xs ml-2 text-[#1DB954] hover:text-white font-medium transition-colors border border-[#1DB954]/30 px-2 py-1 rounded hover:bg-[#1DB954]/10"
+                                >
+                                    {filteredResults.length > 0 && filteredResults.every(r => selectedUris.has(r.uri)) ? 'Deselect All' : 'Select All'}
+                                </button>
+                            )}
                         </h2>
 
                         {results.length > 0 && !scanStatus.is_running && (
@@ -733,10 +824,21 @@ export const Dashboard: React.FC = () => {
                                 </div>
 
                                 <div className="p-6 overflow-y-auto flex-1 text-gray-300 space-y-4">
-                                    <div className="bg-blue-900/20 border border-blue-900/50 p-4 rounded-lg text-sm mb-4">
-                                        <p>Found <strong>{detectedAlbums.length}</strong> albums with 4+ tracks.</p>
-                                        <p>Selected albums will be moved to the bottom of the playlist.</p>
-                                        <p>Unselected albums will be <strong>removed</strong> from the results.</p>
+                                    <div className="bg-blue-900/20 border border-blue-900/50 p-4 rounded-lg text-sm mb-4 flex justify-between items-start">
+                                        <div>
+                                            <p>Found <strong>{detectedAlbums.length}</strong> albums with 4+ tracks.</p>
+                                            <p>Selected albums will be moved to the bottom of the playlist.</p>
+                                            <p>Unselected albums will be <strong>removed</strong> from the results.</p>
+                                        </div>
+                                        <button
+                                            onClick={() => {
+                                                const allSelected = detectedAlbums.every(a => a.selected);
+                                                setDetectedAlbums(prev => prev.map(a => ({ ...a, selected: !allSelected })));
+                                            }}
+                                            className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-1.5 rounded text-xs font-bold transition-colors shadow-lg ml-4 whitespace-nowrap"
+                                        >
+                                            {detectedAlbums.every(a => a.selected) ? 'Deselect All' : 'Select All'}
+                                        </button>
                                     </div>
 
                                     <div className="space-y-2">
@@ -780,6 +882,91 @@ export const Dashboard: React.FC = () => {
                                     >
                                         Apply Changes ({detectedAlbums.filter(a => a.selected).length} Albums)
                                     </button>
+                                </div>
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+                {/* Automation Modal */}
+                <AnimatePresence>
+                    {showAutoSettings && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+                        >
+                            <div className="bg-[#181818] border border-[#1DB954]/30 rounded-xl w-full max-w-lg shadow-2xl p-6">
+                                <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
+                                    <Calendar className="w-6 h-6 text-[#1DB954]" /> Automate Weekly Scan
+                                </h3>
+
+                                <div className="space-y-6">
+                                    <div className="flex items-center justify-between bg-[#282828] p-4 rounded-lg">
+                                        <span className="text-gray-200">Enable Automation</span>
+                                        <div
+                                            onClick={() => setAutoEnabled(!autoEnabled)}
+                                            className={`w-12 h-6 rounded-full p-1 cursor-pointer transition-colors ${autoEnabled ? 'bg-[#1DB954]' : 'bg-gray-600'}`}
+                                        >
+                                            <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${autoEnabled ? 'translate-x-6' : ''}`} />
+                                        </div>
+                                    </div>
+
+                                    {autoEnabled && (
+                                        <div className="grid grid-cols-2 gap-4">
+                                            <div>
+                                                <label className="text-xs text-gray-500 uppercase block mb-2">Run Day</label>
+                                                <select value={autoDay} onChange={e => setAutoDay(e.target.value)} className="w-full bg-[#333] border border-gray-600 rounded px-3 py-2 text-white outline-none focus:border-[#1DB954]">
+                                                    {['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].map(d => (
+                                                        <option key={d} value={d} className="capitalize">{d}</option>
+                                                    ))}
+                                                </select>
+                                            </div>
+                                            <div>
+                                                <label className="text-xs text-gray-500 uppercase block mb-2">Run Time (UTC)</label>
+                                                <input type="time" value={autoTime} onChange={e => setAutoTime(e.target.value)} className="w-full bg-[#333] border border-gray-600 rounded px-3 py-2 text-white outline-none focus:border-[#1DB954]" />
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <div className="text-xs text-gray-400 bg-blue-900/10 border border-blue-900/30 p-4 rounded leading-relaxed">
+                                        <p>The automation will run weekly and scan for releases from the <strong>last 7 days</strong>.</p>
+                                        <p className="mt-2">It will use your <strong>current filters</strong> (Forbidden Keywords, Excluded Artists, etc.) as defined in the dashboard right now.</p>
+                                        <p className="mt-2">Results will be automatically saved to a playlist named <strong>"Weekly Radar [Date]"</strong>.</p>
+                                    </div>
+
+                                    <div className="flex gap-4 mt-6">
+                                        <button onClick={() => setShowAutoSettings(false)} className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded transition-colors">Cancel</button>
+                                        <button
+                                            onClick={async () => {
+                                                try {
+                                                    await axios.post('/api/automation/config', {
+                                                        enabled: autoEnabled,
+                                                        run_day: autoDay,
+                                                        run_time: autoTime,
+                                                        settings: {
+                                                            start_date: "DYNAMIC",
+                                                            end_date: "DYNAMIC",
+                                                            include_followed: includeFollowed,
+                                                            include_liked_songs: includeLiked,
+                                                            min_liked_songs: minLikedSongs,
+                                                            album_types: albumTypes,
+                                                            refresh_artists: refreshArtists,
+                                                            min_duration_sec: minDurationSec,
+                                                            max_duration_sec: maxDurationSec,
+                                                            forbidden_keywords: forbiddenKeywords.split('\n').map(k => k.trim()).filter(k => k.length > 0),
+                                                            exclude_artists: excludedArtists.split('\n').map(s => s.trim()).filter(s => s.length > 0)
+                                                        }
+                                                    });
+                                                    alert("Automation settings saved!");
+                                                    setShowAutoSettings(false);
+                                                } catch (e: any) { alert('Error saving settings: ' + e.message); }
+                                            }}
+                                            className="flex-1 bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold py-2 rounded transition-colors shadow-lg shadow-green-900/20"
+                                        >
+                                            Save Settings
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </motion.div>

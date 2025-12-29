@@ -142,27 +142,34 @@ class AdvancedEngine:
                 
         return filtered_artists
 
-    async def scan_process(self, sp, settings, app_sp=None):
+    async def scan_process(self, sp, settings, app_sp=None, auto_export_name=None):
         # Use App Client for heavy lifting if provided, else fallback to User Client
         work_sp = app_sp if app_sp else sp
         
         self.state["is_running"] = True
         self.state["status"] = "initializing"
+        self.state["progress"] = 0
+        self.state["results_count"] = 0
+        self.state["logs"] = []
         self._save_state()
         
         try:
             # 1. Gather Artists
-            artists = []
             refresh_artists = settings.get('refresh_artists', True)
             include_followed = settings.get('include_followed', True)
             include_liked = settings.get('include_liked_songs', False)
             min_liked = settings.get('min_liked_songs', 1)
             
-            # Use cache ONLY if exclusively using Followed Artists and refresh is false
-            # If Liked Songs are requested, we probably need to fetch them (or cache them separately, but for now we fetch)
-            # Simplification: If include_liked is True, we skip full cache load or we append.
-            # Best approach: Load followed from cache if available, then fetch liked if requested.
-            
+            # Exclude logic
+            exclude_raw = settings.get('exclude_artists', [])
+            exclude_ids = set()
+            exclude_names = set()
+            for ex in exclude_raw:
+                if len(ex) == 22 and " " not in ex: # Simple ID check
+                     exclude_ids.add(ex)
+                else:
+                     exclude_names.add(ex.lower().strip())
+
             followed_artists = []
             if include_followed:
                 if not refresh_artists and storage.exists(ARTISTS_CACHE_FILE):
@@ -187,14 +194,20 @@ class AdvancedEngine:
             for a in liked_artists:
                 unique_map[a['id']] = a
             
-            artists = list(unique_map.values())
+            all_artists = list(unique_map.values())
+
+            # Filter Excluded Artists
+            artists = []
+            for a in all_artists:
+                if a['id'] in exclude_ids: continue
+                if a['name'].lower().strip() in exclude_names: continue
+                artists.append(a)
             
             self.state["total"] = len(artists)
             self.state["status"] = "scanning"
             self._save_state()
             
             concurrency_limit = 5
-            semaphore = asyncio.Semaphore(concurrency_limit)
             
             start_date_str = settings.get('start_date')
             end_date_str = settings.get('end_date')
@@ -205,8 +218,6 @@ class AdvancedEngine:
             album_types = settings.get('album_types', ['album', 'single'])
             include_groups_str = ",".join(album_types)
             
-            results_buffer = []
-
             # Filter Config
             filter_config = {
                 "min_duration_ms": settings.get('min_duration_sec', 90) * 1000,
@@ -214,22 +225,6 @@ class AdvancedEngine:
                 "forbidden_keywords": settings.get('forbidden_keywords', []),
                 "include_groups": include_groups_str
             }
-
-            # Define rate limit callback
-            def on_rate_limit(seconds):
-                if seconds > 300: # If wait is more than 5 minutes
-                    self.state["status"] = "error"
-                    self.state["error"] = f"Spotify blocked requests for {seconds} seconds (approx {round(seconds/3600, 1)} hours). Try again later."
-                    self.state["is_running"] = False
-                    self._save_state()
-                    # We need to stop execution. Raising an exception is the easiest way to break the loop.
-                    raise Exception(f"Rate limit too long: {seconds}s")
-                
-                self.state["rate_limit_until"] = time.time() + seconds + 1
-                self.state["retry_after"] = seconds
-                self.log(f"Rate Limit Hit! Pausing for {seconds}s")
-                self._save_state()
-
 
             from .engine import process_artist
             
@@ -256,7 +251,7 @@ class AdvancedEngine:
                         process_artist,
                         work_sp,          # App Token (or User Token)
                         artist,
-                        [],               # exclusion_artists
+                        [],               # exclusion_artists handled above
                         [],               # no_filter_artists
                         start_date,
                         end_date,
@@ -288,6 +283,25 @@ class AdvancedEngine:
             # Finalize
             self.log(f"DEBUG: Loop finished. Saving {len(results_buffer)} results.")
             storage.save_json(RESULTS_FILE, results_buffer)
+            
+            # Auto Export Logic
+            if auto_export_name and results_buffer:
+                self.log(f"Starting Auto-Export to playlist '{auto_export_name}'...")
+                try:
+                     # Calculate Date Range for name
+                     final_name = f"{auto_export_name} {start_date_str} - {end_date_str}"
+                     user_id = sp.current_user()['id']
+                     
+                     pl = sp.user_playlist_create(user_id, final_name, public=False)
+                     uris = [t['uri'] for t in results_buffer]
+                     
+                     # Batch add
+                     for j in range(0, len(uris), 100):
+                         sp.playlist_add_items(pl['id'], uris[j:j+100])
+                         
+                     self.log(f"SUCCESS: Auto-exported to {final_name}")
+                except Exception as exp:
+                     self.log(f"ERROR: Auto-export failed: {exp}")
             
             self.state["results_count"] = len(results_buffer)
             self.state["status"] = "completed"

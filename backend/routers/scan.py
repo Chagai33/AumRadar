@@ -21,6 +21,53 @@ class ScanSettings(BaseModel):
     min_duration_sec: int = 90
     max_duration_sec: int = 270
     forbidden_keywords: List[str] = [" live ", "session", "לייב", "קאבר", "a capella", "acapella", "FSOE", "techno", "extended", "sped up", "speed up", "intro", "slow", "remaster", "instrumental"]
+    exclude_artists: List[str] = [] # List of Artist names or IDs to skip
+
+class AutomationConfig(BaseModel):
+    enabled: bool = False
+    run_day: str = "friday" # monday, tuesday...
+    run_time: str = "10:00"
+    settings: ScanSettings
+
+from ..core.automation import automation_manager
+
+@router.get("/automation/config")
+def get_automation_config():
+    return automation_manager.load_config()
+
+@router.post("/automation/config")
+def save_automation_config(config: AutomationConfig):
+    automation_manager.save_config(config.dict())
+    return {"status": "saved", "config": config}
+
+@router.post("/automation/run")
+async def run_automation_headless(background_tasks: BackgroundTasks):
+    config = automation_manager.load_config()
+    if not config.get("enabled"):
+        return {"status": "skipped", "reason": "Automation disabled"}
+        
+    try:
+        headless_sp = automation_manager.get_headless_client()
+        app_sp = get_app_client()
+        
+        # Use settings from config
+        settings_dict = config['settings']
+        
+        # Determine Playlist Name
+        # Maybe allow user to set it? For now default.
+        playlist_name = "Weekly Radar" 
+        
+        background_tasks.add_task(
+            scanner.scan_process, 
+            headless_sp, 
+            settings_dict, 
+            app_sp, 
+            auto_export_name=playlist_name
+        )
+        
+        return {"status": "triggered"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
     
 @router.get("/cache-info")
 def get_cache_info():

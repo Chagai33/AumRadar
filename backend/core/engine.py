@@ -76,12 +76,57 @@ def filter_tracks(tracks, no_filter_artists, filter_options={}):
 
 # --- Spotify Interactions (Synchronous & Robust) ---
 
-def get_artist_albums(sp, artist_id):
-    # Removing ALBUM_CACHE for specific user run to allow fresh data, 
-    # but could add it back if needed. The legacy script had it global.
+def get_artist_albums(sp, artist_id, include_groups, start_date_obj):
+    all_albums = []
+    offset = 0
+    limit = 50
+    
     while True:
         try:
-            return sp.artist_albums(artist_id, include_groups='single,album', limit=5)['items']
+            results = sp.artist_albums(artist_id, include_groups=include_groups, limit=limit, offset=offset)
+            items = results.get('items', [])
+            
+            if not items:
+                break
+            
+            # Flag to check if we found ANY relevant item in this batch.
+            # If the entire batch is older than start_date, we can safely stop (assuming sorted order).
+            batch_has_relevant_items = False
+            
+            for item in items:
+                r_date_str = item.get('release_date')
+                if not r_date_str: continue
+
+                try:
+                    if len(r_date_str) == 4:
+                        r_date = datetime.datetime.strptime(r_date_str, '%Y').date()
+                    elif len(r_date_str) == 7:
+                        r_date = datetime.datetime.strptime(r_date_str, '%Y-%m').date()
+                    else:
+                        r_date = datetime.datetime.strptime(r_date_str, '%Y-%m-%d').date()
+                except ValueError:
+                    continue
+                
+                # Check if item is within or after start date
+                if r_date >= start_date_obj:
+                    all_albums.append(item)
+                    batch_has_relevant_items = True
+                else:
+                    # Item is older than start_date.
+                    # Since Spotify returns Newest -> Oldest, everything after this is also old.
+                    # Stop fetching.
+                    return all_albums
+
+            # If the whole batch was scanned and nothing was relevant (all too old?), stop.
+            # But wait, the loop above returns immediately on the first old item.
+            # So if we reached here, it means all items in batch were Valid (>= start_date).
+            # So we continue to next batch.
+            
+            if len(items) < limit:
+                break
+                
+            offset += limit
+            
         except SpotifyException as e:
             if e.http_status == 429:
                 retry_after = int(e.headers.get('Retry-After', 5))
@@ -89,10 +134,12 @@ def get_artist_albums(sp, artist_id):
                 time.sleep(retry_after)
             else:
                 log_message(f"SpotifyException fetching albums: {e}")
-                return []
+                break
         except Exception as e:
             log_message(f"Error fetching albums for artist {artist_id}: {e}")
-            return []
+            break
+            
+    return all_albums
 
 def get_tracks_for_albums_in_batch(sp, album_ids):
     all_tracks = {}
@@ -133,14 +180,17 @@ def get_tracks_for_albums_in_batch(sp, album_ids):
         time.sleep(0.5) # Gentle cooldown between batches
     return all_tracks
 
-def get_new_releases(sp, artist_id, start_date, end_date):
+def get_new_releases(sp, artist_id, start_date, end_date, filter_options={}):
     new_releases = []
-    releases = get_artist_albums(sp, artist_id)
+    # Default to single,album if not specified
+    include_groups = filter_options.get('include_groups', 'album,single')
+    
+    # Use Smart Pagination with Cutoff
+    releases = get_artist_albums(sp, artist_id, include_groups, start_date)
     
     for album in releases:
         try:
             r_date_str = album['release_date']
-            # Robust date parsing
             if len(r_date_str) == 4:
                 r_date = datetime.datetime.strptime(r_date_str, '%Y').date()
             elif len(r_date_str) == 7: 
@@ -148,11 +198,9 @@ def get_new_releases(sp, artist_id, start_date, end_date):
             else:
                 r_date = datetime.datetime.strptime(r_date_str, '%Y-%m-%d').date()
 
+            # Double check range (End Date)
             if start_date <= r_date <= end_date:
-                log_message(f"DEBUG: Found '{album['name']}' ({r_date}) - MATCH!")
                 new_releases.append(album)
-            else:
-                log_message(f"DEBUG: Skipped '{album['name']}' ({r_date}) - Outside range")
         except ValueError:
             continue
             
@@ -168,7 +216,7 @@ def process_artist(sp, artist, exclusion_artists, no_filter_artists, start_date,
         
     # log_message(f"Processing artist: {artist['name']}") # Too verbose for 2000 artists
     
-    new_releases = get_new_releases(sp, artist_id, start_date, end_date)
+    new_releases = get_new_releases(sp, artist_id, start_date, end_date, filter_options)
     filtered = []
     excluded = []
     

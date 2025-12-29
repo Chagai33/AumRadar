@@ -5,9 +5,6 @@ from .config import settings
 from .routers import auth, scan
 import os
 
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
-
 app = FastAPI(title="Antigravity Spotify Connect")
 
 # Middleware
@@ -23,8 +20,7 @@ app.add_middleware(
 origins = [
     "http://localhost:5173", 
     "http://localhost:5174", 
-    "http://127.0.0.1:5174",
-    "https://aumradar-838002431698.europe-west1.run.app"
+    "http://127.0.0.1:5174"
 ]
 env_origins = os.getenv("ALLOWED_ORIGINS")
 if env_origins:
@@ -42,20 +38,6 @@ app.add_middleware(
 app.include_router(auth.router, tags=["Auth"])
 app.include_router(scan.router, prefix="/api", tags=["Scan"])
 
-# Serve React Frontend
-# We need to check if the path exists to prefer running locally without dist vs production
-if os.path.exists("frontend/dist"):
-    app.mount("/assets", StaticFiles(directory="frontend/dist/assets"), name="assets")
-
-    @app.get("/{full_path:path}")
-    async def serve_react_app(full_path: str):
-        # Allow API calls to pass through (though they should be caught by routers above)
-        if full_path.startswith("api"):
-            return {"error": "API route not found"}
-            
-        # Serve index.html for all other routes (SPA handling)
-        return FileResponse("frontend/dist/index.html")
-else:
-    @app.get("/")
-    def read_root():
-        return {"message": "API Running (Frontend not built)", "docs": "/docs"}
+@app.get("/")
+def read_root():
+    return {"message": "API Running", "docs": "/docs"}

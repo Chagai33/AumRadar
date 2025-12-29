@@ -67,6 +67,23 @@ export const Dashboard: React.FC = () => {
     const [searchTerm, setSearchTerm] = useState('');
     const [originalResults, setOriginalResults] = useState<Track[]>([]);
 
+    // Selection State
+    const [selectedUris, setSelectedUris] = useState<Set<string>>(new Set());
+
+    // Auto-select all on load
+    useEffect(() => {
+        if (results.length > 0) {
+            setSelectedUris(new Set(results.map(t => t.uri)));
+        }
+    }, [results]);
+
+    const toggleSelection = (uri: string) => {
+        const newSet = new Set(selectedUris);
+        if (newSet.has(uri)) newSet.delete(uri);
+        else newSet.add(uri);
+        setSelectedUris(newSet);
+    };
+
     // Advanced Filters State
     const [minDurationSec, setMinDurationSec] = useState(90);
     const [maxDurationSec, setMaxDurationSec] = useState(270); // Default 4:30
@@ -192,7 +209,12 @@ export const Dashboard: React.FC = () => {
         if (!name) return;
 
         try {
-            const uris = results.map(r => r.uri);
+            const uris = Array.from(selectedUris);
+            if (uris.length === 0) {
+                alert("Please select at least one track to export.");
+                return;
+            }
+
             const res = await axios.post('/api/export', { name, uris });
 
             if (res.data.status === 'success') {
@@ -651,6 +673,14 @@ export const Dashboard: React.FC = () => {
                             className="bg-[#181818] group hover:bg-[#282828] p-4 rounded-lg transition-all duration-300 relative"
                         >
                             <div className="relative aspect-square mb-4 shadow-lg overflow-hidden rounded-md">
+                                <div className="absolute top-2 left-2 z-20" onClick={e => e.stopPropagation()}>
+                                    <input
+                                        type="checkbox"
+                                        checked={selectedUris.has(track.uri)}
+                                        onChange={() => toggleSelection(track.uri)}
+                                        className="w-5 h-5 rounded border-gray-500 bg-black/60 text-[#1DB954] focus:ring-[#1DB954] cursor-pointer"
+                                    />
+                                </div>
                                 <img
                                     src={track.album?.images?.[0]?.url || '/placeholder.png'}
                                     alt={track.album?.name}

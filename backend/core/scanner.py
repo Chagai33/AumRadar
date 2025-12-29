@@ -211,7 +211,8 @@ class AdvancedEngine:
             filter_config = {
                 "min_duration_ms": settings.get('min_duration_sec', 90) * 1000,
                 "max_duration_ms": settings.get('max_duration_sec', 270) * 1000,
-                "forbidden_keywords": settings.get('forbidden_keywords', [])
+                "forbidden_keywords": settings.get('forbidden_keywords', []),
+                "include_groups": include_groups_str
             }
 
             # Define rate limit callback

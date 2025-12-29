@@ -87,14 +87,44 @@ export const Dashboard: React.FC = () => {
     // Advanced Filters State
     const [minDurationSec, setMinDurationSec] = useState(90);
     const [maxDurationSec, setMaxDurationSec] = useState(270); // Default 4:30
-    const [forbiddenKeywords, setForbiddenKeywords] = useState('live\nsession\nremix\n');
+    const [forbiddenKeywords, setForbiddenKeywords] = useState(
+        "live\nsession\nלייב\nקאבר\na capella\nacapella\nFSOE\ntechno\nextended\nsped up\nspeed up\nintro\nslow\nremaster\ninstrumental"
+    );
     const [excludedArtists, setExcludedArtists] = useState('');
+    const [showSettings, setShowSettings] = useState(false);
 
     // Automation State
     const [showAutoSettings, setShowAutoSettings] = useState(false);
     const [autoEnabled, setAutoEnabled] = useState(false);
     const [autoDay, setAutoDay] = useState('friday');
     const [autoTime, setAutoTime] = useState('10:00');
+
+    // Load defaults from LocalStorage
+    useEffect(() => {
+        const saved = localStorage.getItem('aum_settings');
+        if (saved) {
+            try {
+                const p = JSON.parse(saved);
+                if (p.minDurationSec) setMinDurationSec(p.minDurationSec);
+                if (p.maxDurationSec) setMaxDurationSec(p.maxDurationSec);
+                if (p.forbiddenKeywords) setForbiddenKeywords(p.forbiddenKeywords);
+                if (p.excludedArtists) setExcludedArtists(p.excludedArtists);
+                if (p.albumTypes) setAlbumTypes(p.albumTypes);
+                if (p.includeFollowed !== undefined) setIncludeFollowed(p.includeFollowed);
+                if (p.includeLiked !== undefined) setIncludeLiked(p.includeLiked);
+                if (p.minLikedSongs) setMinLikedSongs(p.minLikedSongs);
+            } catch (e) { console.error("Error loading settings", e); }
+        }
+    }, []);
+
+    const saveAsDefault = () => {
+        const settings = {
+            minDurationSec, maxDurationSec, forbiddenKeywords, excludedArtists,
+            albumTypes, includeFollowed, includeLiked, minLikedSongs
+        };
+        localStorage.setItem('aum_settings', JSON.stringify(settings));
+        alert('Settings saved as default for this browser!');
+    };
 
     // Load Automation Config
     useEffect(() => {
@@ -464,160 +494,14 @@ export const Dashboard: React.FC = () => {
 
                 {/* Controls (Disabled while scanning) */}
                 {!scanStatus.is_running && (
-                    <section className="bg-[#181818] rounded-xl p-6 border border-[#282828] mb-8 shadow-xl">
+                    <section className="bg-[#181818] rounded-xl p-6 border border-[#282828] mb-8 shadow-xl transition-all duration-300">
 
-                        {/* Scan Settings Grid */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                        {/* Compact Toolbar */}
+                        <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-6">
 
-                            {/* Release Types */}
-                            <div>
-                                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">
-                                    Release Types
-                                </label>
-                                <div className="flex flex-wrap gap-3">
-                                    {['album', 'single', 'compilation', 'appears_on'].map(type => (
-                                        <label key={type} className="flex items-center gap-2 cursor-pointer bg-[#282828] px-3 py-2 rounded border border-transparent hover:border-gray-600 transition-colors">
-                                            <input
-                                                type="checkbox"
-                                                checked={albumTypes.includes(type)}
-                                                onChange={e => {
-                                                    if (e.target.checked) setAlbumTypes([...albumTypes, type]);
-                                                    else setAlbumTypes(albumTypes.filter(t => t !== type));
-                                                }}
-                                                className="rounded text-[#1DB954] focus:ring-[#1DB954] bg-[#333] border-gray-600"
-                                            />
-                                            <span className="capitalize text-sm text-gray-300">{type.replace('_', ' ')}</span>
-                                        </label>
-                                    ))}
-                                </div>
-                            </div>
-
-                            {/* Scan Source */}
-                            <div>
-                                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">
-                                    Scan Source
-                                </label>
-                                <div className="space-y-3">
-                                    <label className="flex items-center gap-3 cursor-pointer">
-                                        <div className={`w-10 h-6 rounded-full p-1 transition-colors ${includeFollowed ? 'bg-[#1DB954]' : 'bg-gray-600'}`}>
-                                            <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${includeFollowed ? 'translate-x-4' : ''}`} />
-                                        </div>
-                                        <input type="checkbox" className="hidden" checked={includeFollowed} onChange={e => setIncludeFollowed(e.target.checked)} />
-                                        <span className="text-sm text-gray-300">Scan Followed Artists</span>
-                                    </label>
-
-                                    <div className="bg-[#282828] p-3 rounded border border-gray-700">
-                                        <div className="flex items-center justify-between mb-2">
-                                            <label className="flex items-center gap-3 cursor-pointer">
-                                                <div className={`w-10 h-6 rounded-full p-1 transition-colors ${includeLiked ? 'bg-[#1DB954]' : 'bg-gray-600'}`}>
-                                                    <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${includeLiked ? 'translate-x-4' : ''}`} />
-                                                </div>
-                                                <input type="checkbox" className="hidden" checked={includeLiked} onChange={e => setIncludeLiked(e.target.checked)} />
-                                                <span className="text-sm text-gray-300">Scan Artists from Liked Songs</span>
-                                            </label>
-                                        </div>
-
-                                        {includeLiked && (
-                                            <div className="ml-12">
-                                                <label className="text-xs text-gray-500 block mb-1">
-                                                    Minimum Liked Songs per Artist
-                                                </label>
-                                                <input
-                                                    type="number"
-                                                    min="1"
-                                                    value={minLikedSongs}
-                                                    onChange={e => setMinLikedSongs(parseInt(e.target.value) || 1)}
-                                                    className="w-full bg-[#333] border border-gray-600 rounded px-2 py-1 text-sm text-white focus:border-[#1DB954] outline-none"
-                                                />
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            </div>
-
-                            {/* Advanced Filters */}
-                            <div className="md:col-span-2 border-t border-[#333] pt-6 mt-2">
-                                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4 block flex items-center gap-2">
-                                    <Filter className="w-4 h-4" /> Advanced Filters
-                                </label>
-
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                    <div>
-                                        <label className="text-xs text-gray-400 block mb-2">Track Duration (Seconds)</label>
-                                        <div className="flex items-center gap-4">
-                                            <div className="flex-1">
-                                                <span className="text-[10px] text-gray-500 uppercase block mb-1">Min</span>
-                                                <input
-                                                    type="number"
-                                                    value={minDurationSec}
-                                                    onChange={e => setMinDurationSec(Number(e.target.value))}
-                                                    className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-sm focus:border-[#1DB954] outline-none"
-                                                />
-                                            </div>
-                                            <div className="flex-1">
-                                                <span className="text-[10px] text-gray-500 uppercase block mb-1">Max</span>
-                                                <input
-                                                    type="number"
-                                                    value={maxDurationSec}
-                                                    onChange={e => setMaxDurationSec(Number(e.target.value))}
-                                                    className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-sm focus:border-[#1DB954] outline-none"
-                                                />
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    <div>
-                                        <label className="text-xs text-gray-400 block mb-2">Forbidden Keywords (One per line)</label>
-                                        <textarea
-                                            value={forbiddenKeywords}
-                                            onChange={e => setForbiddenKeywords(e.target.value)}
-                                            rows={4}
-                                            className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-xs font-mono text-gray-300 focus:border-[#1DB954] outline-none resize-none"
-                                            placeholder="live&#10;remix&#10;..."
-                                        />
-                                    </div>
-
-                                    <div className="md:col-span-2 mt-4 pt-4 border-t border-[#333]">
-                                        <label className="text-xs text-gray-400 block mb-2">Excluded Artists (One Name or ID per line)</label>
-                                        <textarea
-                                            value={excludedArtists}
-                                            onChange={e => setExcludedArtists(e.target.value)}
-                                            rows={3}
-                                            className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-xs font-mono text-gray-300 focus:border-[#1DB954] outline-none resize-none"
-                                            placeholder="Justin Bieber&#10;6eUKZXaKkcviH0Ku9w2n3V&#10;..."
-                                        />
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Cache Notification (repositioned if needed, keeping existing logic) */}
-                        {cacheInfo?.exists && includeFollowed && (
-                            <div className="mb-6 p-4 bg-[#282828] rounded-lg border border-gray-700 flex flex-col md:flex-row justify-between items-center gap-4">
-                                <div>
-                                    <p className="text-sm text-gray-300">
-                                        <span className="font-bold text-[#1DB954]">{cacheInfo.count} Artists</span> found in cache.
-                                    </p>
-                                    <p className="text-xs text-gray-500">
-                                        Last updated: {new Date(cacheInfo.last_updated!).toLocaleString()}
-                                    </p>
-                                </div>
-                                <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-300 hover:text-white transition-colors bg-[#1a1a1a] px-3 py-2 rounded">
-                                    <input
-                                        type="checkbox"
-                                        checked={refreshArtists}
-                                        onChange={(e) => setRefreshArtists(e.target.checked)}
-                                        className="w-4 h-4 rounded text-[#1DB954] focus:ring-[#1DB954] bg-[#333] border-gray-600"
-                                    />
-                                    Force Refresh Artist List
-                                </label>
-                            </div>
-                        )}
-
-                        <div className="flex flex-col md:flex-row gap-6 items-end justify-between">
-
-                            <div className="flex gap-4">
-                                <div>
+                            {/* Left: Date Range & Start Button */}
+                            <div className="flex flex-col md:flex-row gap-4 md:items-end w-full xl:w-auto">
+                                <div className="flex-1 md:flex-none">
                                     <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">
                                         Time Range
                                     </label>
@@ -627,7 +511,7 @@ export const Dashboard: React.FC = () => {
                                                 key={opt}
                                                 onClick={() => setDateOption(opt)}
                                                 className={clsx(
-                                                    "px-4 py-2 rounded-md text-sm font-medium transition-all",
+                                                    "px-3 py-2 rounded-md text-sm font-medium transition-all whitespace-nowrap flex-1 md:flex-none",
                                                     dateOption === opt ? "bg-[#333] text-white shadow-sm" : "text-gray-400 hover:text-gray-200"
                                                 )}
                                             >
@@ -638,12 +522,12 @@ export const Dashboard: React.FC = () => {
                                 </div>
 
                                 {dateOption === 'custom' && (
-                                    <div className="flex gap-2 items-end">
+                                    <div className="flex gap-2 items-end flex-1 md:flex-none">
                                         <div>
                                             <label className="text-xs text-gray-500 block mb-1">Start</label>
                                             <input
                                                 type="date"
-                                                className="bg-[#282828] border border-[#333] rounded px-3 py-2 text-sm text-white focus:border-[#1DB954] outline-none"
+                                                className="bg-[#282828] border border-[#333] rounded px-3 py-2 text-sm text-white focus:border-[#1DB954] outline-none w-full"
                                                 value={customStart}
                                                 onChange={e => setCustomStart(e.target.value)}
                                             />
@@ -652,23 +536,199 @@ export const Dashboard: React.FC = () => {
                                             <label className="text-xs text-gray-500 block mb-1">End</label>
                                             <input
                                                 type="date"
-                                                className="bg-[#282828] border border-[#333] rounded px-3 py-2 text-sm text-white focus:border-[#1DB954] outline-none"
+                                                className="bg-[#282828] border border-[#333] rounded px-3 py-2 text-sm text-white focus:border-[#1DB954] outline-none w-full"
                                                 value={customEnd}
                                                 onChange={e => setCustomEnd(e.target.value)}
                                             />
                                         </div>
                                     </div>
                                 )}
+
+                                <button
+                                    onClick={handleStartScan}
+                                    className="bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold py-2.5 px-6 rounded-lg shadow-lg hover:shadow-[#1DB954]/20 transition-all transform hover:scale-105 flex items-center justify-center gap-2 whitespace-nowrap mt-2 md:mt-0"
+                                >
+                                    <Search className="w-5 h-5" />
+                                    Start Scan
+                                </button>
                             </div>
 
+                            {/* Right: Settings Toggle */}
                             <button
-                                onClick={handleStartScan}
-                                className="bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold py-3 px-8 rounded-full shadow-lg hover:shadow-[#1DB954]/20 transition-all transform hover:scale-105 flex items-center gap-2"
+                                onClick={() => setShowSettings(!showSettings)}
+                                className={`flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors border border-transparent ${showSettings ? 'bg-[#333] text-white border-gray-600' : 'text-gray-400 hover:text-white hover:bg-[#282828]'}`}
                             >
-                                <Search className="w-5 h-5" />
-                                Start New Scan
+                                <Settings className="w-4 h-4" />
+                                {showSettings ? 'Hide Settings' : 'Configure Filters'}
                             </button>
                         </div>
+
+                        <AnimatePresence>
+                            {showSettings && (
+                                <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: 'auto', opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    className="overflow-hidden"
+                                >
+                                    <div className="mt-6 pt-6 border-t border-[#333]">
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+
+                                            {/* Release Types */}
+                                            <div>
+                                                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">
+                                                    Release Types
+                                                </label>
+                                                <div className="flex flex-wrap gap-3">
+                                                    {['album', 'single', 'compilation', 'appears_on'].map(type => (
+                                                        <label key={type} className="flex items-center gap-2 cursor-pointer bg-[#282828] px-3 py-2 rounded border border-transparent hover:border-gray-600 transition-colors">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={albumTypes.includes(type)}
+                                                                onChange={e => {
+                                                                    if (e.target.checked) setAlbumTypes([...albumTypes, type]);
+                                                                    else setAlbumTypes(albumTypes.filter(t => t !== type));
+                                                                }}
+                                                                className="rounded text-[#1DB954] focus:ring-[#1DB954] bg-[#333] border-gray-600"
+                                                            />
+                                                            <span className="capitalize text-sm text-gray-300">{type.replace('_', ' ')}</span>
+                                                        </label>
+                                                    ))}
+                                                </div>
+                                            </div>
+
+                                            {/* Scan Source */}
+                                            <div>
+                                                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">
+                                                    Scan Source
+                                                </label>
+                                                <div className="space-y-3">
+                                                    <label className="flex items-center gap-3 cursor-pointer">
+                                                        <div className={`w-10 h-6 rounded-full p-1 transition-colors ${includeFollowed ? 'bg-[#1DB954]' : 'bg-gray-600'}`}>
+                                                            <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${includeFollowed ? 'translate-x-4' : ''}`} />
+                                                        </div>
+                                                        <input type="checkbox" className="hidden" checked={includeFollowed} onChange={e => setIncludeFollowed(e.target.checked)} />
+                                                        <span className="text-sm text-gray-300">Scan Followed Artists</span>
+                                                    </label>
+
+                                                    <div className="bg-[#282828] p-3 rounded border border-gray-700">
+                                                        <div className="flex items-center justify-between mb-2">
+                                                            <label className="flex items-center gap-3 cursor-pointer">
+                                                                <div className={`w-10 h-6 rounded-full p-1 transition-colors ${includeLiked ? 'bg-[#1DB954]' : 'bg-gray-600'}`}>
+                                                                    <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform ${includeLiked ? 'translate-x-4' : ''}`} />
+                                                                </div>
+                                                                <input type="checkbox" className="hidden" checked={includeLiked} onChange={e => setIncludeLiked(e.target.checked)} />
+                                                                <span className="text-sm text-gray-300">Scan Artists from Liked Songs</span>
+                                                            </label>
+                                                        </div>
+
+                                                        {includeLiked && (
+                                                            <div className="ml-12">
+                                                                <label className="text-xs text-gray-500 block mb-1">
+                                                                    Minimum Liked Songs per Artist
+                                                                </label>
+                                                                <input
+                                                                    type="number"
+                                                                    min="1"
+                                                                    value={minLikedSongs}
+                                                                    onChange={e => setMinLikedSongs(parseInt(e.target.value) || 1)}
+                                                                    className="w-full bg-[#333] border border-gray-600 rounded px-2 py-1 text-sm text-white focus:border-[#1DB954] outline-none"
+                                                                />
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Advanced Filters */}
+                                            <div className="md:col-span-2 border-t border-[#333] pt-6 mt-2">
+                                                <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-4 block flex items-center gap-2">
+                                                    <Filter className="w-4 h-4" /> Advanced Filters
+                                                </label>
+
+                                                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                                    <div>
+                                                        <label className="text-xs text-gray-400 block mb-2">Track Duration (Seconds)</label>
+                                                        <div className="flex items-center gap-4">
+                                                            <div className="flex-1">
+                                                                <span className="text-[10px] text-gray-500 uppercase block mb-1">Min</span>
+                                                                <input
+                                                                    type="number"
+                                                                    value={minDurationSec}
+                                                                    onChange={e => setMinDurationSec(Number(e.target.value))}
+                                                                    className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-sm focus:border-[#1DB954] outline-none"
+                                                                />
+                                                            </div>
+                                                            <div className="flex-1">
+                                                                <span className="text-[10px] text-gray-500 uppercase block mb-1">Max</span>
+                                                                <input
+                                                                    type="number"
+                                                                    value={maxDurationSec}
+                                                                    onChange={e => setMaxDurationSec(Number(e.target.value))}
+                                                                    className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-sm focus:border-[#1DB954] outline-none"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div>
+                                                        <label className="text-xs text-gray-400 block mb-2">Forbidden Keywords (One per line)</label>
+                                                        <textarea
+                                                            value={forbiddenKeywords}
+                                                            onChange={e => setForbiddenKeywords(e.target.value)}
+                                                            rows={4}
+                                                            className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-xs font-mono text-gray-300 focus:border-[#1DB954] outline-none resize-none"
+                                                            placeholder="live&#10;remix&#10;..."
+                                                        />
+                                                    </div>
+
+                                                    <div className="md:col-span-2 mt-4 pt-4 border-t border-[#333]">
+                                                        <label className="text-xs text-gray-400 block mb-2">Excluded Artists (One Name or ID per line)</label>
+                                                        <textarea
+                                                            value={excludedArtists}
+                                                            onChange={e => setExcludedArtists(e.target.value)}
+                                                            rows={3}
+                                                            className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-xs font-mono text-gray-300 focus:border-[#1DB954] outline-none resize-none"
+                                                            placeholder="Justin Bieber&#10;6eUKZXaKkcviH0Ku9w2n3V&#10;..."
+                                                        />
+                                                    </div>
+
+                                                    <div className="md:col-span-2 mt-2 pt-2 flex justify-end">
+                                                        <button onClick={saveAsDefault} className="flex items-center gap-2 text-gray-500 hover:text-[#1DB954] text-xs transition-colors">
+                                                            <Save className="w-3 h-3" /> Save current settings as default
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        {/* Cache Notification (repositioned if needed, keeping existing logic) */}
+                                        {cacheInfo?.exists && includeFollowed && (
+                                            <div className="mb-6 p-4 bg-[#282828] rounded-lg border border-gray-700 flex flex-col md:flex-row justify-between items-center gap-4">
+                                                <div>
+                                                    <p className="text-sm text-gray-300">
+                                                        <span className="font-bold text-[#1DB954]">{cacheInfo.count} Artists</span> found in cache.
+                                                    </p>
+                                                    <p className="text-xs text-gray-500">
+                                                        Last updated: {new Date(cacheInfo.last_updated!).toLocaleString()}
+                                                    </p>
+                                                </div>
+                                                <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-300 hover:text-white transition-colors bg-[#1a1a1a] px-3 py-2 rounded">
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={refreshArtists}
+                                                        onChange={(e) => setRefreshArtists(e.target.checked)}
+                                                        className="w-4 h-4 rounded text-[#1DB954] focus:ring-[#1DB954] bg-[#333] border-gray-600"
+                                                    />
+                                                    Force Refresh Artist List
+                                                </label>
+                                            </div>
+                                        )}
+
+                                    </div>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
                     </section>
                 )}
 
@@ -745,12 +805,14 @@ export const Dashboard: React.FC = () => {
                     )}
                 </div>
 
-                {results.length === 0 && !scanStatus.is_running && (
-                    <div className="text-center py-20 text-gray-500 border-2 border-dashed border-[#282828] rounded-xl">
-                        <Search className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                        <p>Ready to scan. Select a date range above.</p>
-                    </div>
-                )}
+                {
+                    results.length === 0 && !scanStatus.is_running && (
+                        <div className="text-center py-20 text-gray-500 border-2 border-dashed border-[#282828] rounded-xl">
+                            <Search className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                            <p>Ready to scan. Select a date range above.</p>
+                        </div>
+                    )
+                }
 
                 <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6">
                     {filteredResults.length === 0 && results.length > 0 && (
@@ -972,7 +1034,7 @@ export const Dashboard: React.FC = () => {
                         </motion.div>
                     )}
                 </AnimatePresence>
-            </main>
-        </div>
+            </main >
+        </div >
     );
 };

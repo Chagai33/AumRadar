@@ -2,6 +2,49 @@ import time
 import datetime
 import logging
 from spotipy.exceptions import SpotifyException
+import threading
+
+# Global locks for Rate Limit Synchronization
+rate_limit_event = threading.Event()
+rate_limit_event.set() # Initially Green
+
+def safe_api_call(func, *args, **kwargs):
+    """
+    Thread-safe wrapper for Spotify API calls.
+    Blocks all threads if a Rate Limit (429) is hit by any thread.
+    """
+    while True:
+        rate_limit_event.wait() # Wait if Red Light is on
+
+        try:
+            return func(*args, **kwargs)
+        except SpotifyException as e:
+            if e.http_status == 429:
+                # If we are the first to hit the wall, set Red Light
+                if rate_limit_event.is_set():
+                    rate_limit_event.clear() # Red Light - STOP EVERYONE
+                    
+                    retry_after = int(e.headers.get('Retry-After', 5)) + 1
+                    msg = f"⛔ GLOBAL RATE LIMIT HIT! Pausing ALL threads for {retry_after}s."
+                    log_message(msg)
+                    
+                    if retry_after > 70: # If too long, maybe just abort?
+                         # For now we sleep, but user can see status. 
+                         # Actually, let's Raise Critical if HUGE
+                         if retry_after > 120:
+                             rate_limit_event.set() # Release so others can fail too? or keep blocked?
+                             raise Exception(f"CRITICAL_RATE_LIMIT: Wait time {retry_after}s is too long.")
+                    
+                    time.sleep(retry_after)
+                    
+                    log_message("✅ Resuming API calls...")
+                    rate_limit_event.set() # Green Light
+                else:
+                    # Someone else is already handling the sleep, just wait
+                    time.sleep(1) 
+            else:
+                raise e
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -80,21 +123,16 @@ def get_artist_albums(sp, artist_id, include_groups, start_date_obj):
     all_albums = []
     offset = 0
     limit = 50
-    retry_count = 0
     
     while True:
         try:
-            results = sp.artist_albums(artist_id, include_groups=include_groups, limit=limit, offset=offset)
-            retry_count = 0  # Reset on success
+            # Use GLOBAL SAFE API CALL
+            results = safe_api_call(sp.artist_albums, artist_id, include_groups=include_groups, limit=limit, offset=offset)
             items = results.get('items', [])
             
             if not items:
                 break
-            
-            # Flag to check if we found ANY relevant item in this batch.
-            # If the entire batch is older than start_date, we can safely stop (assuming sorted order).
-            batch_has_relevant_items = False
-            
+
             for item in items:
                 r_date_str = item.get('release_date')
                 if not r_date_str: continue
@@ -112,41 +150,19 @@ def get_artist_albums(sp, artist_id, include_groups, start_date_obj):
                 # Check if item is within or after start date
                 if r_date >= start_date_obj:
                     all_albums.append(item)
-                    batch_has_relevant_items = True
                 else:
-                    # Item is older than start_date.
-                    # Since Spotify returns Newest -> Oldest, everything after this is also old.
-                    # Stop fetching.
+                    # Optimized return: Stop if we hit old albums (assuming sorted)
                     return all_albums
-
-            # If the whole batch was scanned and nothing was relevant (all too old?), stop.
-            # But wait, the loop above returns immediately on the first old item.
-            # So if we reached here, it means all items in batch were Valid (>= start_date).
-            # So we continue to next batch.
             
             if len(items) < limit:
                 break
                 
             offset += limit
             
-        except SpotifyException as e:
-            if e.http_status == 429:
-                retry_count += 1
-                retry_after_val = e.headers.get('Retry-After')
-                retry_after = int(retry_after_val) if retry_after_val else 5
-                
-                log_message(f"Rate Limit (429). Wait {retry_after}s. Attempt {retry_count}/3.")
-                
-                if retry_after > 60 or retry_count > 3:
-                    msg = f"Rate limit too severe ({retry_after}s) or max retries ({retry_count}) hit."
-                    log_message(msg)
-                    raise Exception("CRITICAL_RATE_LIMIT: " + msg)
-                    
-                time.sleep(retry_after)
-            else:
-                log_message(f"SpotifyException fetching albums: {e}")
-                break
         except Exception as e:
+            # Check for critical errors raised by safe_api_call
+            if "CRITICAL_RATE_LIMIT" in str(e):
+                raise e # Propagate up to scanner
             log_message(f"Error fetching albums for artist {artist_id}: {e}")
             break
             
@@ -159,7 +175,7 @@ def get_tracks_for_albums_in_batch(sp, album_ids):
     while idx < len(album_ids):
         chunk = album_ids[idx:idx + batch_size]
         try:
-            albums_data = sp.albums(chunk)
+            albums_data = safe_api_call(sp.albums, chunk)
             for album in albums_data['albums']:
                 if album and 'id' in album:
                     aid = album['id']

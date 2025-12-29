@@ -257,7 +257,7 @@ class AdvancedEngine:
             from .engine import process_albums_batch_with_filter
             
             pending_album_ids = []
-            chunk_size = 50 
+            chunk_size = 5 # Reduced from 50 to prevent Rate Limits
             
             for i in range(0, len(artists), chunk_size):
                 if not self.state["is_running"]: break
@@ -268,6 +268,9 @@ class AdvancedEngine:
                 tasks = [process_one(a) for a in chunk]
                 # We use return_exceptions=True to ensure one failure doesn't crash the batch
                 results_ids_list = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Cooldown between chunks
+                await asyncio.sleep(0.5)
                 
                 for res in results_ids_list:
                     if isinstance(res, Exception):

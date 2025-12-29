@@ -1,49 +1,15 @@
-import os
-import json
 import time
 import datetime
 import logging
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
-# spotipy is synchronous by default. We will run blocking calls in a threadpool or use async wrapper if needed.
-# For now, we keep the logic almost identical but wrap in async functions where we can.
-
-import spotipy
 from spotipy.exceptions import SpotifyException
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Constants (File paths - assuming they are in the root or config folder)
-# In a web app, strict file paths might be an issue. We will allow passing them as args.
-DEFAULT_EXCLUSION_FILE = 'ExclusionArtists.txt'
-DEFAULT_NO_FILTER_FILE = 'ArtistNoFilter.txt'
-
 def log_message(message):
+    print(message)
     logger.info(message)
-
-# --- Utility Functions ---
-def load_ids_from_file(file_name):
-    try:
-        if os.path.exists(file_name):
-            with open(file_name, 'r', encoding='utf-8') as f:
-                return [line.strip() for line in f if line.strip()]
-        else:
-            log_message(f"File {file_name} not found. Proceeding without it.")
-            return []
-    except Exception as e:
-        log_message(f"Error loading file {file_name}: {e}")
-        return []
-
-def save_json_to_file(file_name, data):
-    try:
-        # Ensure dir exists
-        os.makedirs(os.path.dirname(os.path.abspath(file_name)), exist_ok=True)
-        with open(file_name, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-    except Exception as e:
-        log_message(f"Error saving to file {file_name}: {e}")
 
 # --- Core Logic ---
 
@@ -53,9 +19,6 @@ def get_normalized_key(track):
     return (normalized_name, tuple(artists))
 
 def filter_tracks(tracks, no_filter_artists, filter_options={}):
-    """
-    Exact copy of legacy filtering logic., but dynamic.
-    """
     filtered_tracks = []
     excluded_tracks = []
     basic_tracks = []
@@ -67,16 +30,15 @@ def filter_tracks(tracks, no_filter_artists, filter_options={}):
     default_forbidden = [" live ", "session", "לייב", "קאבר", "a capella", "acapella", "FSOE",
                        "techno", "extended", "sped up", "speed up", "intro", "slow", "remaster", "instrumental"]
     forbidden_words = filter_options.get('forbidden_keywords', default_forbidden)
-    if not forbidden_words: forbidden_words = default_forbidden # Handle empty list if accidental? No, allow empty list to disable filter.
-    if 'forbidden_keywords' in filter_options: # If explicit list passed
+    if not forbidden_words: forbidden_words = default_forbidden
+    
+    if 'forbidden_keywords' in filter_options:
          forbidden_words = filter_options['forbidden_keywords']
 
     for track in tracks:
         name = track['name'].lower()
         duration_ms = track['duration_ms']
-        # Safe access to artists
-        if not track.get('artists'):
-            continue
+        if not track.get('artists'): continue
         artist_id = track['artists'][0]['id']
         
         if artist_id in no_filter_artists:
@@ -88,7 +50,6 @@ def filter_tracks(tracks, no_filter_artists, filter_options={}):
             excluded_tracks.append(track)
             continue
         
-        # Duration check
         if duration_ms < min_ms or duration_ms > max_ms:
             log_message(f"DEBUG: Skipping '{track['name']}' (Time: {duration_ms/1000}s) - Outside {min_ms/1000}s-{max_ms/1000}s range")
             excluded_tracks.append(track)
@@ -106,199 +67,123 @@ def filter_tracks(tracks, no_filter_artists, filter_options={}):
         non_explicit_tracks = [t for t in group if not t.get('explicit', False)]
         
         if explicit_tracks:
-            for t in explicit_tracks:
-                filtered_tracks.append(t)
-            for t in non_explicit_tracks:
-                excluded_tracks.append(t)
+            filtered_tracks.extend(explicit_tracks)
+            excluded_tracks.extend(non_explicit_tracks)
         else:
-            for t in group:
-                filtered_tracks.append(t)
+            filtered_tracks.extend(group)
 
     return filtered_tracks, excluded_tracks
 
-# --- Spotify Interactions (Async Wrappers) ---
+# --- Spotify Interactions (Synchronous & Robust) ---
 
+def get_artist_albums(sp, artist_id):
+    # Removing ALBUM_CACHE for specific user run to allow fresh data, 
+    # but could add it back if needed. The legacy script had it global.
+    while True:
+        try:
+            return sp.artist_albums(artist_id, include_groups='single,album', limit=5)['items']
+        except SpotifyException as e:
+            if e.http_status == 429:
+                retry_after = int(e.headers.get('Retry-After', 5))
+                log_message(f"Error 429: Too Many Requests. Retrying after {retry_after} seconds.")
+                time.sleep(retry_after)
+            else:
+                log_message(f"SpotifyException fetching albums: {e}")
+                return []
+        except Exception as e:
+            log_message(f"Error fetching albums for artist {artist_id}: {e}")
+            return []
 
-async def get_artist_albums_async(sp, artist_id, include_groups='album,single', on_rate_limit=None):
-    # Running sync call in thread to avoid blocking main loop
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _get_artist_albums_sync, sp, artist_id, include_groups, on_rate_limit)
-
-
-def _get_artist_albums_sync(sp, artist_id, include_groups='album,single', on_rate_limit=None, attempt=1):
-    try:
-        return sp.artist_albums(artist_id, include_groups=include_groups, limit=5)['items']
-    except SpotifyException as e:
-        if e.http_status == 429:
-            if attempt > 10: # Increased retry limit
-                err_msg = f"Persistent Rate Limit reached for artist {artist_id} after 10 attempts."
-                log_message(err_msg)
-                raise Exception(err_msg)
-
-            header_val = e.headers.get('Retry-After')
-            # If header missing, use progressive backoff: 5, 7, 9...
-            retry_after = int(header_val) if header_val else (5 + attempt * 2)
-            
-            if retry_after < 5: retry_after = 5 # Force minimum 5s backoff
-            
-            log_message(f"Rate Limit: sleeping {retry_after}s (attempt {attempt})")
-            
-            if on_rate_limit:
-                on_rate_limit(retry_after)
-                
-            time.sleep(retry_after) 
-            return _get_artist_albums_sync(sp, artist_id, include_groups, on_rate_limit, attempt + 1)
-        return []
-    except Exception as e:
-        log_message(f"Error fetching albums for {artist_id}: {e}")
-        return []
-
-async def get_tracks_for_albums_in_batch(sp, album_ids, on_rate_limit=None):
+def get_tracks_for_albums_in_batch(sp, album_ids):
     all_tracks = {}
     batch_size = 20
     idx = 0
-    
-    loop = asyncio.get_event_loop()
-    
     while idx < len(album_ids):
         chunk = album_ids[idx:idx + batch_size]
         try:
-            # Run the network call in a thread
-            albums_data = await loop.run_in_executor(None, sp.albums, chunk)
-            
+            albums_data = sp.albums(chunk)
             for album in albums_data['albums']:
                 if album and 'id' in album:
                     aid = album['id']
                     if 'tracks' in album and album['tracks']['items']:
-# ... (rest of logic same) ...
-                        # INJECT ALBUM METADATA into tracks
-                        full_tracks = []
-                        for t in album['tracks']['items']:
+                        # Inject metadata
+                        items = album['tracks']['items']
+                        for t in items:
                             t['album'] = {
-                                'id': album['id'],
+                                'id': album['id'], 
                                 'name': album['name'],
-                                'images': album['images'],
+                                'images': album['images'], 
                                 'release_date': album['release_date']
                             }
-                            full_tracks.append(t)
-                        all_tracks[aid] = full_tracks
+                        all_tracks[aid] = items
                     else:
                         all_tracks[aid] = []
         except SpotifyException as e:
             if e.http_status == 429:
                 retry_after = int(e.headers.get('Retry-After', 5))
-                if retry_after < 5: retry_after = 5
-                
-                log_message(f"Rate limited (Albums Batch). Wait {retry_after}s")
-                await asyncio.sleep(retry_after) # Non-blocking sleep for the loop
+                log_message(f"429 Too Many Requests (Batch). Retrying after {retry_after} seconds.")
+                time.sleep(retry_after)
+                continue # Retry same chunk
             else:
-                log_message(f"SpotifyException: {e}")
+                log_message(f"SpotifyException in batch: {e}")
         except Exception as e:
             log_message(f"Error in batch fetch: {e}")
             
         idx += batch_size
-        await asyncio.sleep(0.1) # Yield control
-        
+        time.sleep(0.5) # Gentle cooldown between batches
     return all_tracks
 
-async def get_artist_new_release_ids(sp, artist, exclusion_artists, start_date, end_date, include_groups='album,single', on_rate_limit=None):
-    """
-    Step 1: Get Albums for artist and filter by date.
-    Returns: (list_of_album_ids, processed_count: 1)
-    """
-    if artist['id'] in exclusion_artists:
-        return ([], 1)
-
-    # 1. Get Albums
-    albums = await get_artist_albums_async(sp, artist['id'], include_groups, on_rate_limit)
+def get_new_releases(sp, artist_id, start_date, end_date):
+    new_releases = []
+    releases = get_artist_albums(sp, artist_id)
     
-    new_release_ids = []
-    for album in albums:
+    for album in releases:
         try:
             r_date_str = album['release_date']
-            # Handle YYYY vs YYYY-MM-DD
+            # Robust date parsing
             if len(r_date_str) == 4:
                 r_date = datetime.datetime.strptime(r_date_str, '%Y').date()
             elif len(r_date_str) == 7: 
                  r_date = datetime.datetime.strptime(r_date_str, '%Y-%m').date()
             else:
                 r_date = datetime.datetime.strptime(r_date_str, '%Y-%m-%d').date()
-                
+
             if start_date <= r_date <= end_date:
-                new_release_ids.append(album['id'])
                 log_message(f"DEBUG: Found '{album['name']}' ({r_date}) - MATCH!")
+                new_releases.append(album)
             else:
-                 log_message(f"DEBUG: Skipped '{album['name']}' ({r_date}) - Outside {start_date} <-> {end_date}")
+                log_message(f"DEBUG: Skipped '{album['name']}' ({r_date}) - Outside range")
         except ValueError:
             continue
             
-    return (new_release_ids, 1)
+    return new_releases
 
-async def process_albums_batch_with_filter(sp, album_ids, no_filter_artists, on_rate_limit=None, filter_options={}):
+def process_artist(sp, artist, exclusion_artists, no_filter_artists, start_date, end_date, filter_options={}):
     """
-    Step 2: Batch fetch full album details (tracks) and apply filters.
+    Orchestrates the check for a single artist.
     """
-    if not album_ids:
+    artist_id = artist['id']
+    if artist_id in exclusion_artists:
         return ([], [])
-
-    # Fetch tracks for all these albums in one go (chunked internally if needed, but we pass 20 usually)
-    # The existing get_tracks_for_albums_in_batch handles internal chunking of 20
-    batched_tracks_map = await get_tracks_for_albums_in_batch(sp, album_ids, on_rate_limit)
-    
-    filtered_total = []
-    excluded_total = []
-    
-    for aid, tracks in batched_tracks_map.items():
-        if tracks:
-            # We need to filter. 
-            # Note: tracks returned by get_tracks... already have album metadata injected.
-            f, e = filter_tracks(tracks, no_filter_artists, filter_options)
-            filtered_total.extend(f)
-            excluded_total.extend(e)
-            
-    return (filtered_total, excluded_total)
-
-async def scan_new_releases(sp, artists, start_date, end_date, exclusion_path=DEFAULT_EXCLUSION_FILE, no_filter_path=DEFAULT_NO_FILTER_FILE):
-    """
-    Main entry point for scanning.
-    """
-    exclusion_artists = load_ids_from_file(exclusion_path)
-    no_filter_artists = load_ids_from_file(no_filter_path)
-    
-    all_kept = []
-    all_excluded = []
-    
-    # Process concurrently with a semaphore to avoid rate limits?
-    # Actually, Spotify handles parallel reqs okay, but we should limit concurrency.
-    # The original script used ThreadPoolExecutor(max_workers=5).
-    # We will use asyncio.gather with a semaphore.
-    
-    semaphore = asyncio.Semaphore(5)
-    
-    async def sem_task(artist):
-        async with semaphore:
-            return await process_artist(sp, artist, exclusion_artists, no_filter_artists, start_date, end_date)
-            
-    tasks = [sem_task(a) for a in artists]
-    results = await asyncio.gather(*tasks)
-    
-    for kept, excluded, _ in results:
-        all_kept.extend(kept)
-        all_excluded.extend(excluded)
-       
-    # Remove duplicates (by URI)
-    # Since we are storing dicts now, we need to be careful.
-    # We'll use a dict keyed by URI to dedup.
-    
-    kept_dict = {t['uri']: t for t in all_kept}
-    excluded_dict = {t['uri']: t for t in all_excluded}
         
-    return {
-        "kept_tracks": list(kept_dict.values()),
-        "excluded_tracks": list(excluded_dict.values()),
-        "stats": {
-            "processed_artists": len(artists),
-            "kept_count": len(kept_dict),
-            "excluded_count": len(excluded_dict)
-        }
-    }
+    # log_message(f"Processing artist: {artist['name']}") # Too verbose for 2000 artists
+    
+    new_releases = get_new_releases(sp, artist_id, start_date, end_date)
+    filtered = []
+    excluded = []
+    
+    if new_releases:
+        album_ids = [release['id'] for release in new_releases]
+        # Note: If an artist has multiple new releases, verify we don't spam.
+        # usually 1 or 2 new releases.
+        
+        batched_tracks = get_tracks_for_albums_in_batch(sp, album_ids)
+        
+        for release in new_releases:
+            aid = release['id']
+            if aid in batched_tracks:
+                f_tracks, e_tracks = filter_tracks(batched_tracks[aid], no_filter_artists, filter_options)
+                filtered.extend(f_tracks)
+                excluded.extend(e_tracks)
+                
+    return (filtered, excluded)

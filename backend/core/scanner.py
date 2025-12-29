@@ -229,79 +229,59 @@ class AdvancedEngine:
                 self.log(f"Rate Limit Hit! Pausing for {seconds}s")
                 self._save_state()
 
-            async def process_one(artist):
-                if not self.state["is_running"]: return
-                
-                async with semaphore:
-                    # Update progress UI less frequently to save IO
-                    self.state["current_artist"] = artist['name']
 
-                    from .engine import get_artist_new_release_ids
-                    
-                    try:
-                        # Step 1: Just get IDs
-                        new_ids, _ = await get_artist_new_release_ids(work_sp, artist, [], start_date, end_date, include_groups=include_groups_str, on_rate_limit=on_rate_limit)
-                        return new_ids
-                    except Exception as e:
-                        str_e = str(e)
-                        if "Rate limit too long" in str_e or "Persistent Rate Limit" in str_e:
-                            raise e # Propagate crucial error to main loop
-                        print(f"Error processing {artist['name']}: {e}")
-                        return []
-                    
-                    self.state["progress"] += 1
-                    if self.state["progress"] % 10 == 0:
-                         self.log(f"Progress: {self.state['progress']}/{self.state['total']}")
+            from .engine import process_artist
             
-            # Processing Loop with Global Batching
-            from .engine import process_albums_batch_with_filter
+            results_buffer = []
+            loop = asyncio.get_event_loop()
             
-            pending_album_ids = []
-            chunk_size = 5 # Reduced from 50 to prevent Rate Limits
+            # THREAD POOL for Synchronous Engine (Matches legacy script max_workers=5)
+            executor = ThreadPoolExecutor(max_workers=5)
+            
+            chunk_size = 20
             
             for i in range(0, len(artists), chunk_size):
                 if not self.state["is_running"]: break
                 
                 chunk = artists[i:i + chunk_size]
+                self.state["current_artist"] = f"Processing batch {i}-{i+len(chunk)}"
                 
-                # 1. Gather Album IDs from this chunk of artists
-                tasks = [process_one(a) for a in chunk]
-                # We use return_exceptions=True to ensure one failure doesn't crash the batch
-                results_ids_list = await asyncio.gather(*tasks, return_exceptions=True)
+                tasks = []
+                for artist in chunk:
+                    # Run sync function in thread
+                    task = loop.run_in_executor(
+                        executor,
+                        process_artist,
+                        work_sp,          # App Token (or User Token)
+                        artist,
+                        [],               # exclusion_artists
+                        [],               # no_filter_artists
+                        start_date,
+                        end_date,
+                        filter_config
+                    )
+                    tasks.append(task)
                 
-                # Cooldown between chunks
-                await asyncio.sleep(0.5)
+                # Wait for batch
+                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
                 
-                for res in results_ids_list:
+                for res in batch_results:
                     if isinstance(res, Exception):
-                        str_e = str(res)
-                        if "Rate limit too long" in str_e or "Persistent Rate Limit" in str_e:
-                            raise res # This will trigger the outer exception handler and stop the scan
+                        print(f"Batch Error in artist processing: {res}")
+                        continue
                     
-                    if res and isinstance(res, list):
-                        pending_album_ids.extend(res)
-                        
-                # self.state["progress"] = min(i + chunk_size, len(artists)) # REMOVED
-                self.state["current_artist"] = "Batch Processing..." # update status for filtering phase
-                
-                # 2. Process pending albums if we have enough
-                while len(pending_album_ids) >= 20:
-                    batch = pending_album_ids[:20]
-                    pending_album_ids = pending_album_ids[20:]
-                    
-                    kept, excluded = await process_albums_batch_with_filter(work_sp, batch, [], filter_options=filter_config, on_rate_limit=on_rate_limit)
+                    if not res: continue
+
+                    kept, excluded = res
                     if kept:
                         results_buffer.extend(kept)
                 
-                # Checkpoint results
+                self.state["progress"] += len(chunk)
                 self.state["results_count"] = len(results_buffer)
                 self._save_state()
-            
-            # 3. Process remaining albums
-            if pending_album_ids:
-                 kept, excluded = await process_albums_batch_with_filter(work_sp, pending_album_ids, [], filter_options=filter_config, on_rate_limit=on_rate_limit)
-                 if kept:
-                    results_buffer.extend(kept)
+                
+                # Small breathe
+                await asyncio.sleep(0.5)
                 
             # Finalize
             self.state["status"] = "completed"

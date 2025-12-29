@@ -80,10 +80,12 @@ def get_artist_albums(sp, artist_id, include_groups, start_date_obj):
     all_albums = []
     offset = 0
     limit = 50
+    retry_count = 0
     
     while True:
         try:
             results = sp.artist_albums(artist_id, include_groups=include_groups, limit=limit, offset=offset)
+            retry_count = 0  # Reset on success
             items = results.get('items', [])
             
             if not items:
@@ -129,8 +131,17 @@ def get_artist_albums(sp, artist_id, include_groups, start_date_obj):
             
         except SpotifyException as e:
             if e.http_status == 429:
-                retry_after = int(e.headers.get('Retry-After', 5))
-                log_message(f"Error 429: Too Many Requests. Retrying after {retry_after} seconds.")
+                retry_count += 1
+                retry_after_val = e.headers.get('Retry-After')
+                retry_after = int(retry_after_val) if retry_after_val else 5
+                
+                log_message(f"Rate Limit (429). Wait {retry_after}s. Attempt {retry_count}/3.")
+                
+                if retry_after > 60 or retry_count > 3:
+                    msg = f"Rate limit too severe ({retry_after}s) or max retries ({retry_count}) hit."
+                    log_message(msg)
+                    raise Exception("CRITICAL_RATE_LIMIT: " + msg)
+                    
                 time.sleep(retry_after)
             else:
                 log_message(f"SpotifyException fetching albums: {e}")

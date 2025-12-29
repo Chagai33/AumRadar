@@ -41,8 +41,10 @@ class AdvancedEngine:
 
     def log(self, msg):
         print(msg) 
-        # Optional: Append to logs list in state, but keep it small
-        # self.state['logs'].append(msg)
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        self.state['logs'].append(f"[{timestamp}] {msg}")
+        if len(self.state['logs']) > 50:
+             self.state['logs'].pop(0)
 
     def get_artists_cache_info(self):
         if storage.exists(ARTISTS_CACHE_FILE):
@@ -264,7 +266,16 @@ class AdvancedEngine:
                 
                 for res in batch_results:
                     if isinstance(res, Exception):
-                        print(f"Batch Error in artist processing: {res}")
+                        err_msg = str(res)
+                        print(f"Batch Error: {err_msg}")
+                        
+                        if "CRITICAL_RATE_LIMIT" in err_msg:
+                            self.log(f"⛔ CRITICAL ERROR: {err_msg}")
+                            self.state["status"] = "error"
+                            self.state["error"] = "Spotify Rate Limit Hit (Too many requests). Please try again later."
+                            self.stop_scan()
+                            # Break out of the results processing
+                            break 
                         continue
                     
                     if not res: continue

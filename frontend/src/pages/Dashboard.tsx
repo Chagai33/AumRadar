@@ -33,6 +33,7 @@ interface ScanStatus {
     results_count: number;
     error?: string;
     retry_after?: number;
+    logs?: string[];
 }
 
 export const Dashboard: React.FC = () => {
@@ -498,6 +499,31 @@ export const Dashboard: React.FC = () => {
                             <p className="text-red-300">{scanStatus.error}</p>
                         </div>
                         <button onClick={() => setScanStatus(prev => ({ ...prev, error: undefined }))} className="ml-auto text-red-300 hover:text-white">x</button>
+                    </motion.div>
+                )}
+
+                {/* Error Banner */}
+                {scanStatus.status === 'error' && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="bg-red-900/10 border border-red-500/30 rounded-xl p-6 mb-8 flex flex-col md:flex-row items-start gap-4"
+                    >
+                        <AlertTriangle className="w-6 h-6 text-red-500 shrink-0 mt-1" />
+                        <div className="flex-1 w-full">
+                            <h3 className="text-lg font-bold text-red-400">Scan Failed due to Rate Limits</h3>
+                            <p className="text-gray-300 mt-1 text-sm">{scanStatus.error || "Too many requests to Spotify. Please wait a while before scanning again."}</p>
+
+                            {/* Logs Preview */}
+                            {scanStatus.logs && scanStatus.logs.length > 0 && (
+                                <div className="mt-4 bg-black/40 border border-red-500/20 rounded p-3 max-h-40 overflow-y-auto font-mono text-xs text-red-100/70 whitespace-pre-wrap">
+                                    <p className="text-[10px] text-gray-500 uppercase mb-2 sticky top-0 bg-black/40 backdrop-blur w-full pb-1 border-b border-white/10">Recent Logs</p>
+                                    {scanStatus.logs.slice(-10).reverse().map((log, i) => (
+                                        <div key={i} className="mb-0.5 border-b border-white/5 pb-0.5">{log}</div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                     </motion.div>
                 )}
 

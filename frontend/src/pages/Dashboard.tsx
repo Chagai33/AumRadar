@@ -98,33 +98,42 @@ export const Dashboard: React.FC = () => {
     const [autoEnabled, setAutoEnabled] = useState(false);
     const [autoDay, setAutoDay] = useState('friday');
     const [autoTime, setAutoTime] = useState('10:00');
+    const [settingsLoaded, setSettingsLoaded] = useState(false);
 
-    // Load defaults from LocalStorage
+    // Load defaults from LocalStorage on mount
     useEffect(() => {
         const saved = localStorage.getItem('aum_settings');
         if (saved) {
             try {
                 const p = JSON.parse(saved);
-                if (p.minDurationSec) setMinDurationSec(p.minDurationSec);
-                if (p.maxDurationSec) setMaxDurationSec(p.maxDurationSec);
-                if (p.forbiddenKeywords) setForbiddenKeywords(p.forbiddenKeywords);
-                if (p.excludedArtists) setExcludedArtists(p.excludedArtists);
-                if (p.albumTypes) setAlbumTypes(p.albumTypes);
+                if (p.minDurationSec !== undefined) setMinDurationSec(p.minDurationSec);
+                if (p.maxDurationSec !== undefined) setMaxDurationSec(p.maxDurationSec);
+                if (p.forbiddenKeywords !== undefined) setForbiddenKeywords(p.forbiddenKeywords);
+                if (p.excludedArtists !== undefined) setExcludedArtists(p.excludedArtists);
+                if (p.albumTypes !== undefined) setAlbumTypes(p.albumTypes);
                 if (p.includeFollowed !== undefined) setIncludeFollowed(p.includeFollowed);
                 if (p.includeLiked !== undefined) setIncludeLiked(p.includeLiked);
-                if (p.minLikedSongs) setMinLikedSongs(p.minLikedSongs);
+                if (p.minLikedSongs !== undefined) setMinLikedSongs(p.minLikedSongs);
             } catch (e) { console.error("Error loading settings", e); }
         }
+        setSettingsLoaded(true);
     }, []);
 
-    const saveAsDefault = () => {
-        const settings = {
-            minDurationSec, maxDurationSec, forbiddenKeywords, excludedArtists,
-            albumTypes, includeFollowed, includeLiked, minLikedSongs
-        };
-        localStorage.setItem('aum_settings', JSON.stringify(settings));
-        alert('Settings saved as default for this browser!');
-    };
+    // Autosave Settings to LocalStorage
+    useEffect(() => {
+        if (!settingsLoaded) return; // Don't save before loading
+
+        const timeoutId = setTimeout(() => {
+            const settings = {
+                minDurationSec, maxDurationSec, forbiddenKeywords, excludedArtists,
+                albumTypes, includeFollowed, includeLiked, minLikedSongs
+            };
+            localStorage.setItem('aum_settings', JSON.stringify(settings));
+            // console.log("Settings autosaved");
+        }, 1000); // 1-second debounce to avoid spamming storage while typing
+
+        return () => clearTimeout(timeoutId);
+    }, [minDurationSec, maxDurationSec, forbiddenKeywords, excludedArtists, albumTypes, includeFollowed, includeLiked, minLikedSongs, settingsLoaded]);
 
     // Load Automation Config
     useEffect(() => {
@@ -694,9 +703,9 @@ export const Dashboard: React.FC = () => {
                                                     </div>
 
                                                     <div className="md:col-span-2 mt-2 pt-2 flex justify-end">
-                                                        <button onClick={saveAsDefault} className="flex items-center gap-2 text-gray-500 hover:text-[#1DB954] text-xs transition-colors">
-                                                            <Save className="w-3 h-3" /> Save current settings as default
-                                                        </button>
+                                                        <span className="text-[10px] text-gray-600 flex items-center gap-1.5 opacity-70">
+                                                            <Save className="w-3 h-3" /> Settings auto-saved
+                                                        </span>
                                                     </div>
                                                 </div>
                                             </div>

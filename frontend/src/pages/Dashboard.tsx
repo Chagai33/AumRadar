@@ -1064,23 +1064,9 @@ export const Dashboard: React.FC = () => {
                                         </div>
                                     </div>
 
-                                    {/* Schedule */}
-                                    <div>
-                                        <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">Schedule</label>
-                                        <div className="grid grid-cols-2 gap-3">
-                                            <div>
-                                                <label className="text-xs text-gray-500 block mb-1">Run Day</label>
-                                                <select value={autoDay} onChange={e => setAutoDay(e.target.value)} className="w-full bg-[#282828] border border-gray-600 rounded px-3 py-2 text-white outline-none focus:border-[#1DB954]">
-                                                    {['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].map(d => (
-                                                        <option key={d} value={d} className="capitalize">{d.charAt(0).toUpperCase() + d.slice(1)}</option>
-                                                    ))}
-                                                </select>
-                                            </div>
-                                            <div>
-                                                <label className="text-xs text-gray-500 block mb-1">Run Time (UTC)</label>
-                                                <input type="time" value={autoTime} onChange={e => setAutoTime(e.target.value)} className="w-full bg-[#282828] border border-gray-600 rounded px-3 py-2 text-white outline-none focus:border-[#1DB954]" />
-                                            </div>
-                                        </div>
+                                    {/* Schedule managed in GCP Cloud Scheduler — not editable here */}
+                                    <div className="text-xs text-gray-600 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg px-4 py-2.5">
+                                        ⏰ Schedule is managed directly in <span className="text-gray-400">GCP Cloud Scheduler</span>
                                     </div>
 
                                     {/* Date Range */}

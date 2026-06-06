@@ -45,7 +45,7 @@ export const Dashboard: React.FC = () => {
     });
 
     const [results, setResults] = useState<Track[]>([]);
-    const [dateOption, setDateOption] = useState<'last7' | 'last30' | 'custom'>('last7');
+    const [dateOption, setDateOption] = useState<'last7' | 'last30' | 'custom' | 'sat_to_fri'>('sat_to_fri');
     const [customStart, setCustomStart] = useState('');
     const [customEnd, setCustomEnd] = useState('');
 
@@ -158,13 +158,30 @@ export const Dashboard: React.FC = () => {
         }).catch(e => console.error("Auto config load error", e));
     }, []);
 
-    // Poll for status
+    // Initial load: cache info + one status check
     useEffect(() => {
-        // Initial cache info check
         checkCacheInfo();
-
-        let interval: any;
         const checkStatus = async () => {
+            try {
+                const { data } = await axios.get('/api/status');
+                setScanStatus(data);
+                if (data.results_count > 0) {
+                    const res = await axios.get('/api/results');
+                    setResults(res.data);
+                    setOriginalResults(res.data);
+                }
+            } catch (e) {
+                console.error("Status check failed", e);
+            }
+        };
+        checkStatus();
+    }, []);
+
+    // Poll only while a scan is running
+    useEffect(() => {
+        if (!scanStatus.is_running) return;
+
+        const interval = setInterval(async () => {
             try {
                 const { data } = await axios.get('/api/status');
                 setScanStatus(data);
@@ -177,13 +194,10 @@ export const Dashboard: React.FC = () => {
             } catch (e) {
                 console.error("Status poll failed", e);
             }
-        };
-
-        checkStatus();
-        interval = setInterval(checkStatus, 2000);
+        }, 2000);
 
         return () => clearInterval(interval);
-    }, []);
+    }, [scanStatus.is_running, results.length]);
 
     const checkCacheInfo = async () => {
         try {
@@ -229,6 +243,15 @@ export const Dashboard: React.FC = () => {
             start.setDate(end.getDate() - 7);
         } else if (dateOption === 'last30') {
             start.setDate(end.getDate() - 30);
+        } else if (dateOption === 'sat_to_fri') {
+            // "Saturday to Friday" logic
+            // Find most recent Friday (or today if it is Friday)
+            const daysSinceFriday = (end.getDay() + 7 - 5) % 7;
+            end.setDate(end.getDate() - daysSinceFriday);
+
+            // Start is 6 days before that Friday (which is Saturday)
+            start.setTime(end.getTime()); // Sync start directly to end first
+            start.setDate(end.getDate() - 6);
         } else {
             // custom
             return { start_date: customStart, end_date: customEnd };
@@ -261,6 +284,11 @@ export const Dashboard: React.FC = () => {
             startD.setDate(endD.getDate() - 7);
         } else if (dateOption === 'last30') {
             startD.setDate(endD.getDate() - 30);
+        } else if (dateOption === 'sat_to_fri') {
+            const daysSinceFriday = (endD.getDay() + 7 - 5) % 7;
+            endD.setDate(endD.getDate() - daysSinceFriday);
+            startD.setTime(endD.getTime());
+            startD.setDate(endD.getDate() - 6);
         } else if (dateOption === 'custom' && customStart && customEnd) {
             startD = new Date(customStart);
             endD = new Date(customEnd);
@@ -487,22 +515,6 @@ export const Dashboard: React.FC = () => {
                 )}
 
                 {/* Error Banner */}
-                {scanStatus.error && (
-                    <motion.div
-                        initial={{ opacity: 0, y: -20 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="bg-red-900/30 border border-red-500/50 p-4 rounded-xl mb-6 flex items-start gap-4"
-                    >
-                        <AlertTriangle className="w-6 h-6 text-red-500 shrink-0 mt-1" />
-                        <div>
-                            <h3 className="text-lg font-bold text-red-100">Scan Failed</h3>
-                            <p className="text-red-300">{scanStatus.error}</p>
-                        </div>
-                        <button onClick={() => setScanStatus(prev => ({ ...prev, error: undefined }))} className="ml-auto text-red-300 hover:text-white">x</button>
-                    </motion.div>
-                )}
-
-                {/* Error Banner */}
                 {scanStatus.status === 'error' && (
                     <motion.div
                         initial={{ opacity: 0, y: -20 }}
@@ -511,7 +523,7 @@ export const Dashboard: React.FC = () => {
                     >
                         <AlertTriangle className="w-6 h-6 text-red-500 shrink-0 mt-1" />
                         <div className="flex-1 w-full">
-                            <h3 className="text-lg font-bold text-red-400">Scan Failed due to Rate Limits</h3>
+                            <h3 className="text-lg font-bold text-red-400">Scan Failed</h3>
                             <p className="text-gray-300 mt-1 text-sm">{scanStatus.error || "Too many requests to Spotify. Please wait a while before scanning again."}</p>
 
                             {/* Logs Preview */}
@@ -524,6 +536,12 @@ export const Dashboard: React.FC = () => {
                                 </div>
                             )}
                         </div>
+                        <button
+                            onClick={() => setScanStatus(prev => ({ ...prev, status: 'idle', error: undefined }))}
+                            className="text-red-400 hover:text-white shrink-0"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
                     </motion.div>
                 )}
 
@@ -541,7 +559,7 @@ export const Dashboard: React.FC = () => {
                                         Time Range
                                     </label>
                                     <div className="flex bg-[#282828] rounded-lg p-1">
-                                        {(['last7', 'last30', 'custom'] as const).map(opt => (
+                                        {(['sat_to_fri', 'last7', 'last30', 'custom'] as const).map(opt => (
                                             <button
                                                 key={opt}
                                                 onClick={() => setDateOption(opt)}
@@ -550,7 +568,7 @@ export const Dashboard: React.FC = () => {
                                                     dateOption === opt ? "bg-[#333] text-white shadow-sm" : "text-gray-400 hover:text-gray-200"
                                                 )}
                                             >
-                                                {opt === 'last7' ? 'Last 7 Days' : opt === 'last30' ? 'Last 30 Days' : 'Custom'}
+                                                {opt === 'sat_to_fri' ? 'Sat - Fri' : opt === 'last7' ? 'Last 7 Days' : opt === 'last30' ? 'Last 30 Days' : 'Custom'}
                                             </button>
                                         ))}
                                     </div>

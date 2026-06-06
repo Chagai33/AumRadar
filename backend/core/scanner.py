@@ -30,11 +30,12 @@ class AdvancedEngine:
     def _load_state(self):
         loaded = storage.load_json(SCAN_STATE_FILE)
         if loaded:
-            # We don't necessarily want to carry over 'is_running' as True on restart
-            # But for resuming maybe?
-            # Let's trust the loaded state but force is_running false on init
             self.state = loaded
-            self.state["is_running"] = False # Reset on boot
+            # Always reset transient fields on boot — never carry over a stale error
+            self.state["is_running"] = False
+            self.state["status"] = "idle"
+            self.state.pop("error", None)
+            self.state.pop("rate_limit_until", None)
 
     def _save_state(self):
         storage.save_json(SCAN_STATE_FILE, self.state)
@@ -153,6 +154,8 @@ class AdvancedEngine:
         self.state["progress"] = 0
         self.state["results_count"] = 0
         self.state["logs"] = []
+        self.state.pop("error", None)          # Clear any previous error
+        self.state.pop("rate_limit_until", None)
         self._save_state()
         
         try:

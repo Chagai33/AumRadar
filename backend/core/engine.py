@@ -27,14 +27,8 @@ def safe_api_call(func, *args, **kwargs):
                     retry_after = int(e.headers.get('Retry-After', 5)) + 1
                     msg = f"⛔ GLOBAL RATE LIMIT HIT! Pausing ALL threads for {retry_after}s."
                     log_message(msg)
-                    
-                    if retry_after > 70: # If too long, maybe just abort?
-                         # For now we sleep, but user can see status. 
-                         # Actually, let's Raise Critical if HUGE
-                         if retry_after > 120:
-                             rate_limit_event.set() # Release so others can fail too? or keep blocked?
-                             raise Exception(f"CRITICAL_RATE_LIMIT: Wait time {retry_after}s is too long.")
-                    
+
+                    # Always sleep the full requested time — never abort due to long wait
                     time.sleep(retry_after)
                     
                     log_message("✅ Resuming API calls...")

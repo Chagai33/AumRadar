@@ -8,28 +8,48 @@ import threading
 rate_limit_event = threading.Event()
 rate_limit_event.set() # Initially Green
 
+# Track consecutive rate-limit hits. Spotipy swallows the real (huge) Retry-After
+# header, so we can't trust its value. Instead, if we keep hitting 429 with no
+# successful call in between, the app is hard rate-limited (often for hours) — bail.
+_rl_lock = threading.Lock()
+_consecutive_rate_limits = 0
+MAX_CONSECUTIVE_RATE_LIMITS = 5
+
 def safe_api_call(func, *args, **kwargs):
     """
     Thread-safe wrapper for Spotify API calls.
     Blocks all threads if a Rate Limit (429) is hit by any thread.
+    Raises CRITICAL_RATE_LIMIT if the app is hard rate-limited.
     """
+    global _consecutive_rate_limits
     while True:
         rate_limit_event.wait() # Wait if Red Light is on
 
         try:
-            return func(*args, **kwargs)
+            result = func(*args, **kwargs)
+            # Success — reset the consecutive failure counter
+            with _rl_lock:
+                _consecutive_rate_limits = 0
+            return result
         except SpotifyException as e:
             if e.http_status == 429:
                 retry_after = int(e.headers.get('Retry-After', 5)) + 1
 
-                # If Spotify demands a very long wait, fail immediately instead of sleeping
+                # Bail immediately if Spotify explicitly demands a long wait...
                 if retry_after > 60:
-                    raise Exception(f"CRITICAL_RATE_LIMIT: Spotify rate limit exceeded. Retry-After={retry_after}s. Please try again in a few hours.")
+                    raise Exception(f"CRITICAL_RATE_LIMIT: Spotify rate limit exceeded (Retry-After={retry_after}s). Please try again in a few hours.")
+
+                # ...or if we keep getting throttled with no successful call in between.
+                with _rl_lock:
+                    _consecutive_rate_limits += 1
+                    hits = _consecutive_rate_limits
+                if hits >= MAX_CONSECUTIVE_RATE_LIMITS:
+                    raise Exception(f"CRITICAL_RATE_LIMIT: Spotify throttled {hits} requests in a row. The app is rate-limited — please try again in a few hours.")
 
                 # If we are the first to hit the wall, set Red Light
                 if rate_limit_event.is_set():
                     rate_limit_event.clear() # Red Light - STOP EVERYONE
-                    msg = f"⛔ GLOBAL RATE LIMIT HIT! Pausing ALL threads for {retry_after}s."
+                    msg = f"⛔ GLOBAL RATE LIMIT HIT ({hits}/{MAX_CONSECUTIVE_RATE_LIMITS})! Pausing ALL threads for {retry_after}s."
                     log_message(msg)
                     time.sleep(retry_after)
                     log_message("✅ Resuming API calls...")
@@ -196,8 +216,11 @@ def get_tracks_for_albums_in_batch(sp, album_ids):
             else:
                 log_message(f"SpotifyException in batch: {e}")
         except Exception as e:
+            # Propagate hard rate-limit so the scanner can stop and report it
+            if "CRITICAL_RATE_LIMIT" in str(e):
+                raise
             log_message(f"Error in batch fetch: {e}")
-            
+
         idx += batch_size
         time.sleep(0.5) # Gentle cooldown between batches
     return all_tracks

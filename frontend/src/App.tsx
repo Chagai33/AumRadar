@@ -7,7 +7,11 @@ import { Dashboard } from './pages/Dashboard';
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, loading } = useAuth();
 
-  if (loading) return <div className="h-screen flex items-center justify-center bg-background text-white">Loading...</div>;
+  if (loading) return (
+    <div className="h-screen flex flex-col items-center justify-center bg-[#121212]">
+      <img src="/logo.svg" alt="Aum Radar" className="w-48 animate-pulse" />
+    </div>
+  );
 
   if (!user) return <Navigate to="/login" />;
 

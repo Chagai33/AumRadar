@@ -427,9 +427,7 @@ export const Dashboard: React.FC = () => {
             {/* Top Bar */}
             <header className="sticky top-0 z-50 bg-[#000]/90 backdrop-blur-md border-b border-[#333] px-6 py-4 flex justify-between items-center">
                 <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 bg-gradient-to-br from-[#1DB954] to-emerald-600 rounded-lg flex items-center justify-center">
-                        <ListMusic className="text-white w-5 h-5" />
-                    </div>
+                    <img src="/logo.svg" alt="Aum Radar" className="h-9 w-auto" />
                     <h1 className="text-xl font-bold tracking-tight">
                         Aum <span className="text-[#1DB954]">Radar</span>
                     </h1>

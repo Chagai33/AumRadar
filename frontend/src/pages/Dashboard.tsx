@@ -45,13 +45,13 @@ export const Dashboard: React.FC = () => {
     });
 
     const [results, setResults] = useState<Track[]>([]);
-    const [dateOption, setDateOption] = useState<'last7' | 'last30' | 'custom' | 'sat_to_fri'>('sat_to_fri');
+    const [dateOption, setDateOption] = useState<'last7' | 'last30' | 'custom' | 'sat_to_fri' | 'sun_to_sat'>('sun_to_sat');
     const [customStart, setCustomStart] = useState('');
     const [customEnd, setCustomEnd] = useState('');
 
     // Cache State
     const [cacheInfo, setCacheInfo] = useState<{ exists: boolean, count: number, last_updated: string | null } | null>(null);
-    const [refreshArtists, setRefreshArtists] = useState(false);
+    const [refreshArtists, setRefreshArtists] = useState(true);
 
     // Scan Settings State
     const [albumTypes, setAlbumTypes] = useState<string[]>(['single']);
@@ -63,6 +63,9 @@ export const Dashboard: React.FC = () => {
     const [showAlbumModal, setShowAlbumModal] = useState(false);
     const [detectedAlbums, setDetectedAlbums] = useState<AlbumGroup[]>([]);
     const [detectedSingles, setDetectedSingles] = useState<Track[]>([]);
+
+    // Scan date range (shown in results header)
+    const [scanDateRange, setScanDateRange] = useState<{ start: string; end: string } | null>(null);
 
     // Search and Restore State
     const [searchTerm, setSearchTerm] = useState('');
@@ -214,6 +217,7 @@ export const Dashboard: React.FC = () => {
     const handleStartScan = async () => {
         try {
             const dateParams = calculateDates();
+            setScanDateRange({ start: dateParams.start_date, end: dateParams.end_date });
 
             await axios.post('/api/start', {
                 start_date: dateParams.start_date,
@@ -236,22 +240,26 @@ export const Dashboard: React.FC = () => {
     };
 
     const calculateDates = () => {
-        const end = new Date();
+        const today = new Date();
         const start = new Date();
+        const end = new Date();
 
         if (dateOption === 'last7') {
-            start.setDate(end.getDate() - 7);
+            start.setDate(today.getDate() - 7);
         } else if (dateOption === 'last30') {
-            start.setDate(end.getDate() - 30);
+            start.setDate(today.getDate() - 30);
         } else if (dateOption === 'sat_to_fri') {
-            // "Saturday to Friday" logic
-            // Find most recent Friday (or today if it is Friday)
-            const daysSinceFriday = (end.getDay() + 7 - 5) % 7;
-            end.setDate(end.getDate() - daysSinceFriday);
-
-            // Start is 6 days before that Friday (which is Saturday)
-            start.setTime(end.getTime()); // Sync start directly to end first
+            // Saturday to Friday: find most recent Friday, go back 6 days to Saturday
+            const daysSinceFriday = (today.getDay() + 7 - 5) % 7;
+            end.setDate(today.getDate() - daysSinceFriday);
+            start.setTime(end.getTime());
             start.setDate(end.getDate() - 6);
+        } else if (dateOption === 'sun_to_sat') {
+            // Current calendar week: Sunday → Saturday
+            // getDay(): 0=Sun, 1=Mon, …, 6=Sat
+            const daysSinceSunday = today.getDay();            // days elapsed since Sunday
+            start.setDate(today.getDate() - daysSinceSunday);  // rewind to Sunday
+            end.setDate(start.getDate() + 6);                  // forward to Saturday
         } else {
             // custom
             return { start_date: customStart, end_date: customEnd };
@@ -289,6 +297,10 @@ export const Dashboard: React.FC = () => {
             endD.setDate(endD.getDate() - daysSinceFriday);
             startD.setTime(endD.getTime());
             startD.setDate(endD.getDate() - 6);
+        } else if (dateOption === 'sun_to_sat') {
+            const daysSinceSunday = endD.getDay();
+            startD.setDate(endD.getDate() - daysSinceSunday);
+            endD.setDate(startD.getDate() + 6);
         } else if (dateOption === 'custom' && customStart && customEnd) {
             startD = new Date(customStart);
             endD = new Date(customEnd);
@@ -383,10 +395,8 @@ export const Dashboard: React.FC = () => {
             newOrder = [...newOrder, ...group.tracks];
         });
 
-        if (confirm(`Reordered list.\n${selectedAlbums.length} albums moved to bottom.\n${detectedAlbums.length - selectedAlbums.length} albums removed.\nTotal tracks: ${newOrder.length} (was ${results.length}).\n\nApply?`)) {
-            setResults(newOrder);
-            setShowAlbumModal(false);
-        }
+        setResults(newOrder);
+        setShowAlbumModal(false);
     };
 
     const toggleAlbumSelection = (key: string) => {
@@ -559,7 +569,7 @@ export const Dashboard: React.FC = () => {
                                         Time Range
                                     </label>
                                     <div className="flex bg-[#282828] rounded-lg p-1">
-                                        {(['sat_to_fri', 'last7', 'last30', 'custom'] as const).map(opt => (
+                                        {(['sun_to_sat', 'sat_to_fri', 'last7', 'last30', 'custom'] as const).map(opt => (
                                             <button
                                                 key={opt}
                                                 onClick={() => setDateOption(opt)}
@@ -568,7 +578,7 @@ export const Dashboard: React.FC = () => {
                                                     dateOption === opt ? "bg-[#333] text-white shadow-sm" : "text-gray-400 hover:text-gray-200"
                                                 )}
                                             >
-                                                {opt === 'sat_to_fri' ? 'Sat - Fri' : opt === 'last7' ? 'Last 7 Days' : opt === 'last30' ? 'Last 30 Days' : 'Custom'}
+                                                {opt === 'sun_to_sat' ? 'Sun – Sat' : opt === 'sat_to_fri' ? 'Sat – Fri' : opt === 'last7' ? 'Last 7' : opt === 'last30' ? 'Last 30' : 'Custom'}
                                             </button>
                                         ))}
                                     </div>
@@ -605,6 +615,20 @@ export const Dashboard: React.FC = () => {
                                     Start Scan
                                 </button>
                             </div>
+
+                            {/* Force Refresh — always visible */}
+                            <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-300 hover:text-white transition-colors self-end pb-1">
+                                <input
+                                    type="checkbox"
+                                    checked={refreshArtists}
+                                    onChange={(e) => setRefreshArtists(e.target.checked)}
+                                    className="w-4 h-4 rounded text-[#1DB954] focus:ring-[#1DB954] bg-[#333] border-gray-600"
+                                />
+                                Force Refresh Artist List
+                                {cacheInfo?.exists && !refreshArtists && (
+                                    <span className="text-xs text-gray-500 font-normal">(using cache)</span>
+                                )}
+                            </label>
 
                             {/* Right: Settings Toggle */}
                             <button
@@ -755,26 +779,10 @@ export const Dashboard: React.FC = () => {
                                             </div>
                                         </div>
 
-                                        {/* Cache Notification (repositioned if needed, keeping existing logic) */}
+                                        {/* Cache info — shown only if cache exists */}
                                         {cacheInfo?.exists && includeFollowed && (
-                                            <div className="mb-6 p-4 bg-[#282828] rounded-lg border border-gray-700 flex flex-col md:flex-row justify-between items-center gap-4">
-                                                <div>
-                                                    <p className="text-sm text-gray-300">
-                                                        <span className="font-bold text-[#1DB954]">{cacheInfo.count} Artists</span> found in cache.
-                                                    </p>
-                                                    <p className="text-xs text-gray-500">
-                                                        Last updated: {new Date(cacheInfo.last_updated!).toLocaleString()}
-                                                    </p>
-                                                </div>
-                                                <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-300 hover:text-white transition-colors bg-[#1a1a1a] px-3 py-2 rounded">
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={refreshArtists}
-                                                        onChange={(e) => setRefreshArtists(e.target.checked)}
-                                                        className="w-4 h-4 rounded text-[#1DB954] focus:ring-[#1DB954] bg-[#333] border-gray-600"
-                                                    />
-                                                    Force Refresh Artist List
-                                                </label>
+                                            <div className="mb-6 p-3 bg-[#282828] rounded-lg border border-gray-700 text-xs text-gray-500">
+                                                Artist cache: <span className="text-[#1DB954] font-bold">{cacheInfo.count} artists</span> · Last updated: {new Date(cacheInfo.last_updated!).toLocaleString()}
                                             </div>
                                         )}
 
@@ -788,11 +796,16 @@ export const Dashboard: React.FC = () => {
                 {/* Results Grid Header */}
                 <div className="flex flex-col gap-4 mb-6">
                     <div className="flex items-center justify-between">
-                        <h2 className="text-2xl font-bold flex items-center gap-2">
+                        <h2 className="text-2xl font-bold flex items-center gap-2 flex-wrap">
                             Found Releases
-                            <span className="text-sm font-normal bg-[#333] text-white px-2 py-0.5 rounded-full ml-2">
+                            <span className="text-sm font-normal bg-[#333] text-white px-2 py-0.5 rounded-full">
                                 {filteredResults.length} {filteredResults.length !== results.length && <span className="text-gray-500">/ {results.length}</span>}
                             </span>
+                            {scanDateRange && results.length > 0 && (
+                                <span className="text-xs font-normal text-gray-500 bg-[#222] px-2 py-0.5 rounded-full">
+                                    {scanDateRange.start} → {scanDateRange.end}
+                                </span>
+                            )}
                             {results.length > 0 && (
                                 <button
                                     onClick={() => {
@@ -815,7 +828,7 @@ export const Dashboard: React.FC = () => {
                         </h2>
 
                         {results.length > 0 && !scanStatus.is_running && (
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap gap-2 justify-end">
                                 {results.length !== originalResults.length && (
                                     <button
                                         onClick={handleRestoreResults}
@@ -823,21 +836,21 @@ export const Dashboard: React.FC = () => {
                                         title="Undo album grouping and restore original scan"
                                     >
                                         <RefreshCw className="w-3 h-3" />
-                                        Undo Changes
+                                        Undo
                                     </button>
                                 )}
                                 <button
                                     onClick={handleAnalyzeAlbums}
-                                    className="flex items-center gap-2 bg-[#282828] hover:bg-[#333] border border-gray-600 text-white px-4 py-2 rounded-full text-sm font-bold transition-all"
+                                    className="flex items-center gap-2 bg-[#282828] hover:bg-[#333] border border-gray-600 text-white px-3 py-2 rounded-full text-sm font-bold transition-all"
                                 >
                                     <Layers className="w-4 h-4 text-blue-400" />
-                                    Organize Albums
+                                    Albums
                                 </button>
                                 <button
                                     onClick={handleExport}
-                                    className="flex items-center gap-2 bg-[#282828] hover:bg-[#333] border border-gray-600 text-white px-4 py-2 rounded-full text-sm font-bold transition-all"
+                                    className="flex items-center gap-2 bg-[#1DB954] hover:bg-[#1ed760] text-black px-4 py-2 rounded-full text-sm font-bold transition-all"
                                 >
-                                    <Save className="w-4 h-4 text-[#1DB954]" />
+                                    <Save className="w-4 h-4" />
                                     Export
                                 </button>
                             </div>
@@ -942,8 +955,8 @@ export const Dashboard: React.FC = () => {
                                     <div className="bg-blue-900/20 border border-blue-900/50 p-4 rounded-lg text-sm mb-4 flex justify-between items-start">
                                         <div>
                                             <p>Found <strong>{detectedAlbums.length}</strong> albums with 4+ tracks.</p>
-                                            <p>Selected albums will be moved to the bottom of the playlist.</p>
-                                            <p>Unselected albums will be <strong>removed</strong> from the results.</p>
+                                            <p className="mt-1">☑ <strong>Checked</strong> → moved to the <strong>end</strong> of the playlist.</p>
+                                            <p>☐ <strong>Unchecked</strong> → <strong>removed</strong> from results entirely.</p>
                                         </div>
                                         <button
                                             onClick={() => {
@@ -976,8 +989,8 @@ export const Dashboard: React.FC = () => {
                                                         <div className="text-xs text-gray-400">{group.artist} • {group.tracks.length} tracks</div>
                                                     </div>
                                                 </div>
-                                                <div className="text-xs font-mono text-gray-500">
-                                                    {group.selected ? 'KEEP & MOVE' : 'REMOVE'}
+                                                <div className={`text-xs font-semibold ${group.selected ? 'text-blue-400' : 'text-red-400'}`}>
+                                                    {group.selected ? '→ End' : '✕ Remove'}
                                                 </div>
                                             </div>
                                         ))}

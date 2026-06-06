@@ -47,9 +47,9 @@ class AutomationManager:
 
         # Create OAuth object
         sp_oauth = SpotifyOAuth(
-            client_id=app_settings.SPOTIFY_CLIENT_ID,
-            client_secret=app_settings.SPOTIFY_CLIENT_SECRET,
-            redirect_uri=app_settings.SPOTIFY_REDIRECT_URI,
+            client_id=app_settings.CLIENT_ID,
+            client_secret=app_settings.CLIENT_SECRET,
+            redirect_uri=app_settings.REDIRECT_URI,
             scope="user-library-read user-follow-read playlist-modify-private playlist-modify-public user-top-read"
         )
 

@@ -8,6 +8,22 @@ from ..core.scanner import scanner
 router = APIRouter()
 
 
+def resolve_dynamic_dates(settings_dict: dict) -> dict:
+    """Replace 'DYNAMIC' start/end with the current Sun–Sat calendar week."""
+    if settings_dict.get('start_date') == 'DYNAMIC' or settings_dict.get('end_date') == 'DYNAMIC':
+        today = datetime.date.today()
+        # getweekday(): 0=Mon…6=Sun → days since Sunday = (weekday+1) % 7
+        days_since_sunday = (today.weekday() + 1) % 7
+        week_start = today - datetime.timedelta(days=days_since_sunday)   # Sunday
+        week_end   = week_start + datetime.timedelta(days=6)              # Saturday
+        settings_dict = {
+            **settings_dict,
+            'start_date': week_start.isoformat(),
+            'end_date':   week_end.isoformat(),
+        }
+    return settings_dict
+
+
 class ScanSettings(BaseModel):
     start_date: str
     end_date: str
@@ -50,12 +66,13 @@ async def run_automation_headless(background_tasks: BackgroundTasks):
         headless_sp = automation_manager.get_headless_client()
         app_sp = get_app_client()
         
-        # Use settings from config
-        settings_dict = config['settings']
-        
-        # Determine Playlist Name
-        # Maybe allow user to set it? For now default.
-        playlist_name = "Weekly Radar" 
+        # Use settings from config, resolving dynamic dates
+        settings_dict = resolve_dynamic_dates(dict(config.get('settings', {})))
+
+        # Determine Playlist Name with date range
+        start = settings_dict.get('start_date', '')
+        end   = settings_dict.get('end_date', '')
+        playlist_name = f"Weekly Radar {start} – {end}" if start and end else "Weekly Radar"
         
         background_tasks.add_task(
             scanner.scan_process, 

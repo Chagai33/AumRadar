@@ -38,6 +38,7 @@ class AdvancedEngine:
             self.state.pop("rate_limit_until", None)
 
     def _save_state(self):
+        self.state["heartbeat"] = time.time()
         storage.save_json(SCAN_STATE_FILE, self.state)
 
     def log(self, msg):
@@ -242,12 +243,14 @@ class AdvancedEngine:
             chunk_size = 20
             self.log(f"DEBUG: Starting scan loop for {len(artists)} artists")
             
+            critical_error = False
+
             for i in range(0, len(artists), chunk_size):
                 if not self.state["is_running"]: break
-                
+
                 chunk = artists[i:i + chunk_size]
                 self.state["current_artist"] = f"Processing batch {i}-{i+len(chunk)}"
-                
+
                 tasks = []
                 for artist in chunk:
                     # Run sync function in thread
@@ -263,37 +266,48 @@ class AdvancedEngine:
                         filter_config
                     )
                     tasks.append(task)
-                
+
                 # Wait for batch
                 batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-                
+
                 for res in batch_results:
                     if isinstance(res, Exception):
                         err_msg = str(res)
                         print(f"Batch Error: {err_msg}")
-                        
+
                         if "CRITICAL_RATE_LIMIT" in err_msg:
                             self.log(f"⛔ CRITICAL ERROR: {err_msg}")
-                            self.state["status"] = "error"
-                            self.state["error"] = "Spotify rate limit — too many requests. Please try again in a few hours."
-                            self._save_state()
-                            self.stop_scan()
+                            critical_error = True
                             break
                         continue
-                    
+
                     if not res: continue
 
                     kept, excluded = res
                     if kept:
                         results_buffer.extend(kept)
-                
+
+                # Stop everything on a hard rate-limit — set the error LAST so nothing overwrites it
+                if critical_error:
+                    self.state["is_running"] = False
+                    self.state["status"] = "error"
+                    self.state["error"] = "Spotify rate limit — too many requests. Please try again in a few hours."
+                    self.state["results_count"] = len(results_buffer)
+                    self._save_state()
+                    break
+
                 self.state["progress"] += len(chunk)
                 self.state["results_count"] = len(results_buffer)
                 self._save_state()
-                
+
                 # Small breathe
                 await asyncio.sleep(0.5)
-                
+
+            # If we aborted on a critical error, skip finalize/auto-export entirely
+            if critical_error:
+                self.log("Scan aborted due to Spotify rate limit.")
+                return
+
             # Finalize
             self.log(f"DEBUG: Loop finished. Saving {len(results_buffer)} results.")
             storage.save_json(RESULTS_FILE, results_buffer)
@@ -347,14 +361,26 @@ class AdvancedEngine:
             self._save_state()
 
     def get_status(self):
-        # Dynamic status check
-        current_state = self.state.copy()
+        # Read from GCS (shared source of truth) so polling works even when Cloud Run
+        # serves the request from a different instance than the one running the scan.
+        persisted = storage.load_json(SCAN_STATE_FILE)
+        current_state = persisted if persisted else self.state.copy()
+
+        # Staleness check: if a scan claims to be running but hasn't sent a heartbeat
+        # in 2+ minutes, the instance running it died (e.g. Cloud Run scaled it down or
+        # a deploy replaced it). Report it as a clear error instead of a stuck "scanning".
+        if current_state.get("is_running"):
+            heartbeat = current_state.get("heartbeat", 0)
+            if heartbeat and (time.time() - heartbeat > 120):
+                current_state["is_running"] = False
+                current_state["status"] = "error"
+                current_state["error"] = "Scan was interrupted (server restarted). Please try again."
+
         rate_limit_until = current_state.get("rate_limit_until", 0)
-        
         if time.time() < rate_limit_until:
             current_state["status"] = "rate_limited"
             current_state["retry_after"] = int(rate_limit_until - time.time())
-            
+
         return current_state
     
     def get_results(self):

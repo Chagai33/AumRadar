@@ -234,6 +234,9 @@ export const Dashboard: React.FC = () => {
                 exclude_artists: excludedArtists.split('\n').map(s => s.trim()).filter(s => s.length > 0)
             });
 
+            // Immediately mark as running so the polling effect kicks in
+            setScanStatus(prev => ({ ...prev, is_running: true, status: 'scanning' }));
+
         } catch (e: any) {
             alert('Failed to start scan: ' + (e.response?.data?.detail || e.message));
         }
@@ -582,6 +585,18 @@ export const Dashboard: React.FC = () => {
                                             </button>
                                         ))}
                                     </div>
+                                    {dateOption !== 'custom' && (() => {
+                                        const d = calculateDates();
+                                        const fmt = (s: string) => {
+                                            const [y, m, day] = s.split('-');
+                                            return `${parseInt(day)}.${parseInt(m)}.${y.slice(-2)}`;
+                                        };
+                                        return (
+                                            <div className="text-xs text-gray-500 mt-1.5 pl-1">
+                                                {fmt(d.start_date)} – {fmt(d.end_date)}
+                                            </div>
+                                        );
+                                    })()}
                                 </div>
 
                                 {dateOption === 'custom' && (
@@ -617,18 +632,25 @@ export const Dashboard: React.FC = () => {
                             </div>
 
                             {/* Force Refresh — always visible */}
-                            <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-300 hover:text-white transition-colors self-end pb-1">
-                                <input
-                                    type="checkbox"
-                                    checked={refreshArtists}
-                                    onChange={(e) => setRefreshArtists(e.target.checked)}
-                                    className="w-4 h-4 rounded text-[#1DB954] focus:ring-[#1DB954] bg-[#333] border-gray-600"
-                                />
-                                Force Refresh Artist List
-                                {cacheInfo?.exists && !refreshArtists && (
-                                    <span className="text-xs text-gray-500 font-normal">(using cache)</span>
+                            <div className="flex flex-col gap-1 self-end pb-1">
+                                <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-300 hover:text-white transition-colors">
+                                    <input
+                                        type="checkbox"
+                                        checked={refreshArtists}
+                                        onChange={(e) => setRefreshArtists(e.target.checked)}
+                                        className="w-4 h-4 rounded text-[#1DB954] focus:ring-[#1DB954] bg-[#333] border-gray-600"
+                                    />
+                                    Force Refresh Artist List
+                                    {cacheInfo?.exists && !refreshArtists && (
+                                        <span className="text-xs text-gray-500 font-normal">(using cache)</span>
+                                    )}
+                                </label>
+                                {cacheInfo?.exists && includeFollowed && (
+                                    <span className="text-xs text-gray-500 ml-6">
+                                        {cacheInfo.count} artists · Last updated: {new Date(cacheInfo.last_updated!).toLocaleString()}
+                                    </span>
                                 )}
-                            </label>
+                            </div>
 
                             {/* Right: Settings Toggle */}
                             <button
@@ -779,12 +801,6 @@ export const Dashboard: React.FC = () => {
                                             </div>
                                         </div>
 
-                                        {/* Cache info — shown only if cache exists */}
-                                        {cacheInfo?.exists && includeFollowed && (
-                                            <div className="mb-6 p-3 bg-[#282828] rounded-lg border border-gray-700 text-xs text-gray-500">
-                                                Artist cache: <span className="text-[#1DB954] font-bold">{cacheInfo.count} artists</span> · Last updated: {new Date(cacheInfo.last_updated!).toLocaleString()}
-                                            </div>
-                                        )}
 
                                     </div>
                                 </motion.div>

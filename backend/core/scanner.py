@@ -275,10 +275,10 @@ class AdvancedEngine:
                         if "CRITICAL_RATE_LIMIT" in err_msg:
                             self.log(f"⛔ CRITICAL ERROR: {err_msg}")
                             self.state["status"] = "error"
-                            self.state["error"] = "Spotify Rate Limit Hit (Too many requests). Please try again later."
+                            self.state["error"] = "Spotify rate limit — too many requests. Please try again in a few hours."
+                            self._save_state()
                             self.stop_scan()
-                            # Break out of the results processing
-                            break 
+                            break
                         continue
                     
                     if not res: continue

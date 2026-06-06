@@ -20,22 +20,23 @@ def safe_api_call(func, *args, **kwargs):
             return func(*args, **kwargs)
         except SpotifyException as e:
             if e.http_status == 429:
+                retry_after = int(e.headers.get('Retry-After', 5)) + 1
+
+                # If Spotify demands a very long wait, fail immediately instead of sleeping
+                if retry_after > 60:
+                    raise Exception(f"CRITICAL_RATE_LIMIT: Spotify rate limit exceeded. Retry-After={retry_after}s. Please try again in a few hours.")
+
                 # If we are the first to hit the wall, set Red Light
                 if rate_limit_event.is_set():
                     rate_limit_event.clear() # Red Light - STOP EVERYONE
-                    
-                    retry_after = int(e.headers.get('Retry-After', 5)) + 1
                     msg = f"⛔ GLOBAL RATE LIMIT HIT! Pausing ALL threads for {retry_after}s."
                     log_message(msg)
-
-                    # Always sleep the full requested time — never abort due to long wait
                     time.sleep(retry_after)
-                    
                     log_message("✅ Resuming API calls...")
                     rate_limit_event.set() # Green Light
                 else:
                     # Someone else is already handling the sleep, just wait
-                    time.sleep(1) 
+                    time.sleep(1)
             else:
                 raise e
 

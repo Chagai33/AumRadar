@@ -104,6 +104,7 @@ export const Dashboard: React.FC = () => {
     const [autoTime, setAutoTime] = useState('10:00');
     const [autoDateMode, setAutoDateMode] = useState<'sun_to_sat' | 'last7'>('sun_to_sat');
     const [autoExcludeAlbums, setAutoExcludeAlbums] = useState(false);
+    const [autoRefreshArtists, setAutoRefreshArtists] = useState(false);
     const [settingsLoaded, setSettingsLoaded] = useState(false);
 
     // Load defaults from LocalStorage on mount
@@ -159,6 +160,7 @@ export const Dashboard: React.FC = () => {
                         setForbiddenKeywords(data.settings.forbidden_keywords.join('\n'));
                     }
                     if (data.settings.exclude_albums !== undefined) setAutoExcludeAlbums(data.settings.exclude_albums);
+                    if (data.settings.refresh_artists !== undefined) setAutoRefreshArtists(data.settings.refresh_artists);
                     if (data.settings.start_date === 'LAST7') setAutoDateMode('last7');
                     else setAutoDateMode('sun_to_sat');
                 }
@@ -1102,6 +1104,20 @@ export const Dashboard: React.FC = () => {
                                         </p>
                                     </div>
 
+                                    {/* Refresh Artists */}
+                                    <label className="flex items-start gap-3 bg-[#282828] p-4 rounded-lg cursor-pointer hover:bg-[#2a2a2a] transition-colors">
+                                        <input
+                                            type="checkbox"
+                                            checked={autoRefreshArtists}
+                                            onChange={e => setAutoRefreshArtists(e.target.checked)}
+                                            className="w-4 h-4 mt-0.5 rounded text-[#1DB954] focus:ring-[#1DB954] bg-[#333] border-gray-600 cursor-pointer"
+                                        />
+                                        <div>
+                                            <div className="text-gray-200 font-medium text-sm">Force Refresh Artist List</div>
+                                            <div className="text-xs text-gray-500 mt-0.5">Fetch a fresh artist list from Spotify each run — slower but ensures no new follows are missed</div>
+                                        </div>
+                                    </label>
+
                                     {/* Album Exclusion */}
                                     <label className="flex items-start gap-3 bg-[#282828] p-4 rounded-lg cursor-pointer hover:bg-[#2a2a2a] transition-colors">
                                         <input
@@ -1155,6 +1171,13 @@ export const Dashboard: React.FC = () => {
                                                 </div>
                                             )}
                                             <div className="flex gap-2">
+                                                <span className="w-5 shrink-0">🔄</span>
+                                                <span className="text-gray-500">Artist list:</span>
+                                                <span className={`ml-1 font-medium ${autoRefreshArtists ? 'text-yellow-400' : 'text-gray-300'}`}>
+                                                    {autoRefreshArtists ? 'Refreshed from Spotify each run' : 'Using cached list'}
+                                                </span>
+                                            </div>
+                                            <div className="flex gap-2">
                                                 <span className="w-5 shrink-0">💿</span>
                                                 <span className="text-gray-500">Albums (4+ tracks):</span>
                                                 <span className={`ml-1 font-medium ${autoExcludeAlbums ? 'text-red-400' : 'text-green-400'}`}>
@@ -1189,7 +1212,7 @@ export const Dashboard: React.FC = () => {
                                                             include_liked_songs: includeLiked,
                                                             min_liked_songs: minLikedSongs,
                                                             album_types: albumTypes,
-                                                            refresh_artists: refreshArtists,
+                                                            refresh_artists: autoRefreshArtists,
                                                             min_duration_sec: minDurationSec,
                                                             max_duration_sec: maxDurationSec,
                                                             forbidden_keywords: forbiddenKeywords.split('\n').map(k => k.trim()).filter(k => k.length > 0),

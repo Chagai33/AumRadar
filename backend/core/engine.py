@@ -33,18 +33,23 @@ def safe_api_call(func, *args, **kwargs):
             return result
         except SpotifyException as e:
             if e.http_status == 429:
-                retry_after = int(e.headers.get('Retry-After', 5)) + 1
+                # Real Retry-After from Spotify (seconds). With 429 removed from the
+                # client's status_forcelist, the header survives on the exception.
+                hdr = e.headers.get('Retry-After') if e.headers else None
+                retry_after = (int(hdr) + 1) if hdr else 6
 
-                # Bail immediately if Spotify explicitly demands a long wait...
+                # Bail immediately if Spotify explicitly demands a long wait.
+                # Encode the wait (seconds) after the marker so the scanner can
+                # tell the user exactly how long they're blocked. -1 = unknown.
                 if retry_after > 60:
-                    raise Exception(f"CRITICAL_RATE_LIMIT: Spotify rate limit exceeded (Retry-After={retry_after}s). Please try again in a few hours.")
+                    raise Exception(f"CRITICAL_RATE_LIMIT:{retry_after}")
 
                 # ...or if we keep getting throttled with no successful call in between.
                 with _rl_lock:
                     _consecutive_rate_limits += 1
                     hits = _consecutive_rate_limits
                 if hits >= MAX_CONSECUTIVE_RATE_LIMITS:
-                    raise Exception(f"CRITICAL_RATE_LIMIT: Spotify throttled {hits} requests in a row. The app is rate-limited — please try again in a few hours.")
+                    raise Exception("CRITICAL_RATE_LIMIT:-1")
 
                 # If we are the first to hit the wall, set Red Light
                 if rate_limit_event.is_set():

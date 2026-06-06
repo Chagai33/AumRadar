@@ -32,7 +32,10 @@ def get_app_client():
         client_credentials_manager=client_credentials_manager,
         requests_timeout=20,
         retries=0,
-        status_retries=0
+        status_retries=0,
+        # Exclude 429 so a rate-limit raises a normal error WITH the Retry-After
+        # header intact (otherwise spotipy's retry adapter swallows it).
+        status_forcelist=(500, 502, 503, 504)
     )
 
 @router.get("/login")
@@ -106,8 +109,10 @@ def get_spotify_client(request: Request):
              raise HTTPException(status_code=401, detail="Session Expired")
     
     return spotipy.Spotify(
-        auth=token_info['access_token'], 
-        requests_timeout=20, 
-        retries=0, 
-        status_retries=0
+        auth=token_info['access_token'],
+        requests_timeout=20,
+        retries=0,
+        status_retries=0,
+        # Exclude 429 so a rate-limit raises a normal error WITH the Retry-After header.
+        status_forcelist=(500, 502, 503, 504)
     )

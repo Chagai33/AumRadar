@@ -157,6 +157,7 @@ class AdvancedEngine:
         self.state["logs"] = []
         self.state.pop("error", None)          # Clear any previous error
         self.state.pop("rate_limit_until", None)
+        self.state.pop("blocked_until", None)
         self._save_state()
         
         try:
@@ -244,6 +245,7 @@ class AdvancedEngine:
             self.log(f"DEBUG: Starting scan loop for {len(artists)} artists")
             
             critical_error = False
+            critical_seconds = -1
 
             for i in range(0, len(artists), chunk_size):
                 if not self.state["is_running"]: break
@@ -277,6 +279,10 @@ class AdvancedEngine:
 
                         if "CRITICAL_RATE_LIMIT" in err_msg:
                             self.log(f"⛔ CRITICAL ERROR: {err_msg}")
+                            try:
+                                critical_seconds = int(err_msg.split("CRITICAL_RATE_LIMIT:")[1].split()[0])
+                            except Exception:
+                                critical_seconds = -1
                             critical_error = True
                             break
                         continue
@@ -289,9 +295,12 @@ class AdvancedEngine:
 
                 # Stop everything on a hard rate-limit — set the error LAST so nothing overwrites it
                 if critical_error:
+                    msg, blocked_until = self._format_rate_limit_msg(critical_seconds)
                     self.state["is_running"] = False
                     self.state["status"] = "error"
-                    self.state["error"] = "Spotify rate limit — too many requests. Please try again in a few hours."
+                    self.state["error"] = msg
+                    if blocked_until:
+                        self.state["blocked_until"] = blocked_until
                     self.state["results_count"] = len(results_buffer)
                     self._save_state()
                     break
@@ -360,6 +369,24 @@ class AdvancedEngine:
             self.state["is_running"] = False
             self._save_state()
 
+    def _format_rate_limit_msg(self, seconds):
+        """Build a clear, transparent rate-limit message + absolute unblock time (epoch).
+        seconds < 0 means Spotify didn't tell us how long — fall back to a generic note."""
+        if not seconds or seconds < 0:
+            return ("Spotify rate limit reached — too many requests. "
+                    "Please try again in a few hours.", 0)
+
+        blocked_until = time.time() + seconds
+        h = seconds // 3600
+        m = (seconds % 3600) // 60
+        if h > 0:
+            dur = f"about {h}h {m}m" if m else f"about {h} hours"
+        elif m > 0:
+            dur = f"about {m} minutes"
+        else:
+            dur = f"{seconds} seconds"
+        return (f"Spotify rate limit reached. Try again in {dur}.", blocked_until)
+
     def get_status(self):
         # Read from GCS (shared source of truth) so polling works even when Cloud Run
         # serves the request from a different instance than the one running the scan.
@@ -375,6 +402,15 @@ class AdvancedEngine:
                 current_state["is_running"] = False
                 current_state["status"] = "error"
                 current_state["error"] = "Scan was interrupted (server restarted). Please try again."
+
+        # Keep the rate-limit message accurate over time: recompute the remaining
+        # wait live from the stored absolute unblock time.
+        blocked_until = current_state.get("blocked_until", 0)
+        if current_state.get("status") == "error" and blocked_until:
+            remaining = int(blocked_until - time.time())
+            if remaining > 0:
+                msg, _ = self._format_rate_limit_msg(remaining)
+                current_state["error"] = msg
 
         rate_limit_until = current_state.get("rate_limit_until", 0)
         if time.time() < rate_limit_until:

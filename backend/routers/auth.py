@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request, HTTPException, Depends
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth, SpotifyClientCredentials
 from ..config import settings
@@ -39,7 +39,12 @@ def get_app_client():
 def login():
     sp_oauth = get_spotify_oauth()
     auth_url = sp_oauth.get_authorize_url()
-    return {"url": auth_url}
+    safe_url = auth_url.replace("'", "\\'")
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html><head>
+<meta http-equiv="refresh" content="0;url={auth_url}" />
+<script>window.location.replace('{safe_url}');</script>
+</head><body>Redirecting to Spotify...</body></html>""")
 
 @router.get("/callback")
 def callback(code: str, request: Request):

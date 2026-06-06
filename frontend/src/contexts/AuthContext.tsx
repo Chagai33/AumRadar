@@ -41,13 +41,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
     };
 
-    const login = async () => {
-        try {
-            const { data } = await axios.get('/login');
-            window.location.href = data.url; // Redirect to Spotify
-        } catch (e) {
-            console.error("Login failed", e);
-        }
+    const login = () => {
+        window.location.href = '/login';
     };
 
     const logout = async () => {

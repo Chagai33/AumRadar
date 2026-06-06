@@ -302,20 +302,35 @@ class AdvancedEngine:
             if auto_export_name and results_buffer:
                 self.log(f"Starting Auto-Export to playlist '{auto_export_name}'...")
                 try:
-                     # Calculate Date Range for name
-                     final_name = f"{auto_export_name} {start_date_str} - {end_date_str}"
-                     user_id = sp.current_user()['id']
-                     
-                     pl = sp.user_playlist_create(user_id, final_name, public=False)
-                     uris = [t['uri'] for t in results_buffer]
-                     
-                     # Batch add
-                     for j in range(0, len(uris), 100):
-                         sp.playlist_add_items(pl['id'], uris[j:j+100])
-                         
-                     self.log(f"SUCCESS: Auto-exported to {final_name}")
+                    export_tracks = results_buffer
+
+                    # Album exclusion: remove tracks from albums with 4+ tracks (same artist + album)
+                    if settings.get('exclude_albums', False):
+                        from collections import defaultdict
+                        groups = defaultdict(list)
+                        for t in results_buffer:
+                            album_name  = (t.get('album') or {}).get('name', '')
+                            artist_name = ((t.get('artists') or [{}])[0]).get('name', '')
+                            groups[f"{artist_name}::{album_name}"].append(t)
+                        album_keys = {k for k, v in groups.items() if len(v) >= 4}
+                        export_tracks = [
+                            t for t in results_buffer
+                            if f"{((t.get('artists') or [{}])[0]).get('name','')}::{(t.get('album') or {}).get('name','')}" not in album_keys
+                        ]
+                        self.log(f"Album exclusion: removed {len(results_buffer) - len(export_tracks)} tracks from {len(album_keys)} albums")
+
+                    if export_tracks:
+                        # auto_export_name already contains the date range (built in scan.py)
+                        user_id = sp.current_user()['id']
+                        pl = sp.user_playlist_create(user_id, auto_export_name, public=False)
+                        uris = [t['uri'] for t in export_tracks]
+                        for j in range(0, len(uris), 100):
+                            sp.playlist_add_items(pl['id'], uris[j:j+100])
+                        self.log(f"SUCCESS: Auto-exported {len(export_tracks)} tracks to '{auto_export_name}'")
+                    else:
+                        self.log("No tracks to export after album exclusion.")
                 except Exception as exp:
-                     self.log(f"ERROR: Auto-export failed: {exp}")
+                    self.log(f"ERROR: Auto-export failed: {exp}")
             
             self.state["results_count"] = len(results_buffer)
             self.state["status"] = "completed"

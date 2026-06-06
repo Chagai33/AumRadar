@@ -9,18 +9,20 @@ router = APIRouter()
 
 
 def resolve_dynamic_dates(settings_dict: dict) -> dict:
-    """Replace 'DYNAMIC' start/end with the current Sun–Sat calendar week."""
-    if settings_dict.get('start_date') == 'DYNAMIC' or settings_dict.get('end_date') == 'DYNAMIC':
-        today = datetime.date.today()
-        # getweekday(): 0=Mon…6=Sun → days since Sunday = (weekday+1) % 7
+    """Replace 'DYNAMIC' (Sun–Sat week) or 'LAST7' (rolling 7 days) with real dates."""
+    start = settings_dict.get('start_date')
+    end   = settings_dict.get('end_date')
+    today = datetime.date.today()
+
+    if start == 'DYNAMIC' or end == 'DYNAMIC':
+        # Current calendar week: Sunday → Saturday
         days_since_sunday = (today.weekday() + 1) % 7
-        week_start = today - datetime.timedelta(days=days_since_sunday)   # Sunday
-        week_end   = week_start + datetime.timedelta(days=6)              # Saturday
-        settings_dict = {
-            **settings_dict,
-            'start_date': week_start.isoformat(),
-            'end_date':   week_end.isoformat(),
-        }
+        week_start = today - datetime.timedelta(days=days_since_sunday)
+        week_end   = week_start + datetime.timedelta(days=6)
+        settings_dict = {**settings_dict, 'start_date': week_start.isoformat(), 'end_date': week_end.isoformat()}
+    elif start == 'LAST7' or end == 'LAST7':
+        # Rolling: last 7 days up to and including today
+        settings_dict = {**settings_dict, 'start_date': (today - datetime.timedelta(days=7)).isoformat(), 'end_date': today.isoformat()}
     return settings_dict
 
 
@@ -38,6 +40,9 @@ class ScanSettings(BaseModel):
     max_duration_sec: int = 270
     forbidden_keywords: List[str] = [" live ", "session", "לייב", "קאבר", "a capella", "acapella", "FSOE", "techno", "extended", "sped up", "speed up", "intro", "slow", "remaster", "instrumental"]
     exclude_artists: List[str] = [] # List of Artist names or IDs to skip
+
+    # Automation
+    exclude_albums: bool = False  # If True, tracks from albums (4+ tracks same artist/album) are excluded from auto-export
 
 class AutomationConfig(BaseModel):
     enabled: bool = False

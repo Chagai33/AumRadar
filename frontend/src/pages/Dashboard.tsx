@@ -102,6 +102,8 @@ export const Dashboard: React.FC = () => {
     const [autoEnabled, setAutoEnabled] = useState(false);
     const [autoDay, setAutoDay] = useState('friday');
     const [autoTime, setAutoTime] = useState('10:00');
+    const [autoDateMode, setAutoDateMode] = useState<'sun_to_sat' | 'last7'>('sun_to_sat');
+    const [autoExcludeAlbums, setAutoExcludeAlbums] = useState(false);
     const [settingsLoaded, setSettingsLoaded] = useState(false);
 
     // Load defaults from LocalStorage on mount
@@ -156,6 +158,9 @@ export const Dashboard: React.FC = () => {
                     if (data.settings.forbidden_keywords) {
                         setForbiddenKeywords(data.settings.forbidden_keywords.join('\n'));
                     }
+                    if (data.settings.exclude_albums !== undefined) setAutoExcludeAlbums(data.settings.exclude_albums);
+                    if (data.settings.start_date === 'LAST7') setAutoDateMode('last7');
+                    else setAutoDateMode('sun_to_sat');
                 }
             }
         }).catch(e => console.error("Auto config load error", e));
@@ -1040,14 +1045,15 @@ export const Dashboard: React.FC = () => {
                             exit={{ opacity: 0 }}
                             className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
                         >
-                            <div className="bg-[#181818] border border-[#1DB954]/30 rounded-xl w-full max-w-lg shadow-2xl p-6">
+                            <div className="bg-[#181818] border border-[#1DB954]/30 rounded-xl w-full max-w-lg shadow-2xl p-6 max-h-[90vh] overflow-y-auto">
                                 <h3 className="text-xl font-bold text-white mb-6 flex items-center gap-2">
                                     <Calendar className="w-6 h-6 text-[#1DB954]" /> Automate Weekly Scan
                                 </h3>
 
-                                <div className="space-y-6">
+                                <div className="space-y-5">
+                                    {/* Enable Toggle */}
                                     <div className="flex items-center justify-between bg-[#282828] p-4 rounded-lg">
-                                        <span className="text-gray-200">Enable Automation</span>
+                                        <span className="text-gray-200 font-medium">Enable Automation</span>
                                         <div
                                             onClick={() => setAutoEnabled(!autoEnabled)}
                                             className={`w-12 h-6 rounded-full p-1 cursor-pointer transition-colors ${autoEnabled ? 'bg-[#1DB954]' : 'bg-gray-600'}`}
@@ -1056,41 +1062,129 @@ export const Dashboard: React.FC = () => {
                                         </div>
                                     </div>
 
-                                    {autoEnabled && (
-                                        <div className="grid grid-cols-2 gap-4">
+                                    {/* Schedule */}
+                                    <div>
+                                        <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">Schedule</label>
+                                        <div className="grid grid-cols-2 gap-3">
                                             <div>
-                                                <label className="text-xs text-gray-500 uppercase block mb-2">Run Day</label>
-                                                <select value={autoDay} onChange={e => setAutoDay(e.target.value)} className="w-full bg-[#333] border border-gray-600 rounded px-3 py-2 text-white outline-none focus:border-[#1DB954]">
-                                                    {['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'].map(d => (
-                                                        <option key={d} value={d} className="capitalize">{d}</option>
+                                                <label className="text-xs text-gray-500 block mb-1">Run Day</label>
+                                                <select value={autoDay} onChange={e => setAutoDay(e.target.value)} className="w-full bg-[#282828] border border-gray-600 rounded px-3 py-2 text-white outline-none focus:border-[#1DB954]">
+                                                    {['monday','tuesday','wednesday','thursday','friday','saturday','sunday'].map(d => (
+                                                        <option key={d} value={d} className="capitalize">{d.charAt(0).toUpperCase() + d.slice(1)}</option>
                                                     ))}
                                                 </select>
                                             </div>
                                             <div>
-                                                <label className="text-xs text-gray-500 uppercase block mb-2">Run Time (UTC)</label>
-                                                <input type="time" value={autoTime} onChange={e => setAutoTime(e.target.value)} className="w-full bg-[#333] border border-gray-600 rounded px-3 py-2 text-white outline-none focus:border-[#1DB954]" />
+                                                <label className="text-xs text-gray-500 block mb-1">Run Time (UTC)</label>
+                                                <input type="time" value={autoTime} onChange={e => setAutoTime(e.target.value)} className="w-full bg-[#282828] border border-gray-600 rounded px-3 py-2 text-white outline-none focus:border-[#1DB954]" />
                                             </div>
                                         </div>
-                                    )}
-
-                                    <div className="text-xs text-gray-400 bg-blue-900/10 border border-blue-900/30 p-4 rounded leading-relaxed">
-                                        <p>The automation will run weekly and scan for releases from the <strong>last 7 days</strong>.</p>
-                                        <p className="mt-2">It will use your <strong>current filters</strong> (Forbidden Keywords, Excluded Artists, etc.) as defined in the dashboard right now.</p>
-                                        <p className="mt-2">Results will be automatically saved to a playlist named <strong>"Weekly Radar [Date]"</strong>.</p>
                                     </div>
 
-                                    <div className="flex gap-4 mt-6">
-                                        <button onClick={() => setShowAutoSettings(false)} className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-2 rounded transition-colors">Cancel</button>
+                                    {/* Date Range */}
+                                    <div>
+                                        <label className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-2 block">Date Range to Scan</label>
+                                        <div className="flex gap-2">
+                                            {(['sun_to_sat', 'last7'] as const).map(mode => (
+                                                <button
+                                                    key={mode}
+                                                    onClick={() => setAutoDateMode(mode)}
+                                                    className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-all border ${autoDateMode === mode ? 'bg-[#333] text-white border-gray-500' : 'text-gray-400 border-transparent hover:text-gray-200 hover:bg-[#282828]'}`}
+                                                >
+                                                    {mode === 'sun_to_sat' ? 'Current Week (Sun–Sat)' : 'Last 7 Days'}
+                                                </button>
+                                            ))}
+                                        </div>
+                                        <p className="text-xs text-gray-600 mt-1.5 pl-1">
+                                            {autoDateMode === 'sun_to_sat'
+                                                ? 'Dates are recalculated fresh each time the automation runs'
+                                                : '7 days rolling back from the moment the automation runs'}
+                                        </p>
+                                    </div>
+
+                                    {/* Album Exclusion */}
+                                    <label className="flex items-start gap-3 bg-[#282828] p-4 rounded-lg cursor-pointer hover:bg-[#2a2a2a] transition-colors">
+                                        <input
+                                            type="checkbox"
+                                            checked={autoExcludeAlbums}
+                                            onChange={e => setAutoExcludeAlbums(e.target.checked)}
+                                            className="w-4 h-4 mt-0.5 rounded text-[#1DB954] focus:ring-[#1DB954] bg-[#333] border-gray-600 cursor-pointer"
+                                        />
+                                        <div>
+                                            <div className="text-gray-200 font-medium text-sm">Exclude Albums from Playlist</div>
+                                            <div className="text-xs text-gray-500 mt-0.5">Artists with 4+ tracks from the same album will be excluded from the automated export</div>
+                                        </div>
+                                    </label>
+
+                                    {/* Detailed Summary */}
+                                    <div className="bg-[#0e0e0e] border border-[#2a2a2a] rounded-lg p-4 text-sm space-y-2">
+                                        <p className="text-xs font-bold text-gray-500 uppercase tracking-widest mb-3">What will happen when it runs</p>
+                                        <div className="space-y-2 text-sm">
+                                            <div className="flex gap-2">
+                                                <span className="w-5 shrink-0">📅</span>
+                                                <span className="text-gray-500">Scan range:</span>
+                                                <span className="text-gray-200 ml-1">{autoDateMode === 'sun_to_sat' ? 'Current Sun–Sat calendar week' : 'Last 7 days'}</span>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <span className="w-5 shrink-0">🎵</span>
+                                                <span className="text-gray-500">Release types:</span>
+                                                <span className="text-gray-200 ml-1 capitalize">{albumTypes.length > 0 ? albumTypes.join(', ') : 'None selected'}</span>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <span className="w-5 shrink-0">👥</span>
+                                                <span className="text-gray-500">Source:</span>
+                                                <span className="text-gray-200 ml-1">
+                                                    {[includeFollowed && 'Followed artists', includeLiked && `Liked songs (≥${minLikedSongs})`].filter(Boolean).join(' + ') || 'None'}
+                                                </span>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <span className="w-5 shrink-0">⏱</span>
+                                                <span className="text-gray-500">Duration filter:</span>
+                                                <span className="text-gray-200 ml-1">{minDurationSec}s – {maxDurationSec}s</span>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <span className="w-5 shrink-0">🚫</span>
+                                                <span className="text-gray-500">Keywords blocked:</span>
+                                                <span className="text-gray-200 ml-1">{forbiddenKeywords.split('\n').filter(k => k.trim()).length} keywords</span>
+                                            </div>
+                                            {excludedArtists.split('\n').filter(a => a.trim()).length > 0 && (
+                                                <div className="flex gap-2">
+                                                    <span className="w-5 shrink-0">🚷</span>
+                                                    <span className="text-gray-500">Excluded artists:</span>
+                                                    <span className="text-gray-200 ml-1">{excludedArtists.split('\n').filter(a => a.trim()).length} artists</span>
+                                                </div>
+                                            )}
+                                            <div className="flex gap-2">
+                                                <span className="w-5 shrink-0">💿</span>
+                                                <span className="text-gray-500">Albums (4+ tracks):</span>
+                                                <span className={`ml-1 font-medium ${autoExcludeAlbums ? 'text-red-400' : 'text-green-400'}`}>
+                                                    {autoExcludeAlbums ? 'Excluded from playlist' : 'Included in playlist'}
+                                                </span>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <span className="w-5 shrink-0">💾</span>
+                                                <span className="text-gray-500">Playlist name:</span>
+                                                <span className="text-gray-200 ml-1 font-mono text-xs">"Weekly Radar [date range]"</span>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Actions */}
+                                    <div className="flex gap-3 pt-1">
+                                        <button onClick={() => setShowAutoSettings(false)} className="flex-1 bg-[#282828] hover:bg-[#333] text-white py-2.5 rounded-lg transition-colors font-medium">
+                                            Cancel
+                                        </button>
                                         <button
                                             onClick={async () => {
                                                 try {
+                                                    const dateToken = autoDateMode === 'sun_to_sat' ? 'DYNAMIC' : 'LAST7';
                                                     await axios.post('/api/automation/config', {
                                                         enabled: autoEnabled,
                                                         run_day: autoDay,
                                                         run_time: autoTime,
                                                         settings: {
-                                                            start_date: "DYNAMIC",
-                                                            end_date: "DYNAMIC",
+                                                            start_date: dateToken,
+                                                            end_date: dateToken,
                                                             include_followed: includeFollowed,
                                                             include_liked_songs: includeLiked,
                                                             min_liked_songs: minLikedSongs,
@@ -1099,14 +1193,15 @@ export const Dashboard: React.FC = () => {
                                                             min_duration_sec: minDurationSec,
                                                             max_duration_sec: maxDurationSec,
                                                             forbidden_keywords: forbiddenKeywords.split('\n').map(k => k.trim()).filter(k => k.length > 0),
-                                                            exclude_artists: excludedArtists.split('\n').map(s => s.trim()).filter(s => s.length > 0)
+                                                            exclude_artists: excludedArtists.split('\n').map(s => s.trim()).filter(s => s.length > 0),
+                                                            exclude_albums: autoExcludeAlbums,
                                                         }
                                                     });
-                                                    alert("Automation settings saved!");
+                                                    alert('Automation settings saved!');
                                                     setShowAutoSettings(false);
                                                 } catch (e: any) { alert('Error saving settings: ' + e.message); }
                                             }}
-                                            className="flex-1 bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold py-2 rounded transition-colors shadow-lg shadow-green-900/20"
+                                            className="flex-1 bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold py-2.5 rounded-lg transition-colors shadow-lg"
                                         >
                                             Save Settings
                                         </button>

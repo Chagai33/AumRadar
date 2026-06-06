@@ -23,7 +23,7 @@ export const Login: React.FC = () => {
                 </div>
 
                 <div className="space-y-2">
-                    <h1 className="text-4xl font-bold tracking-tight">Antigravity Music</h1>
+                    <h1 className="text-4xl font-bold tracking-tight">Aum Radar</h1>
                     <p className="text-muted-foreground">
                         Your personal Spotify Release Radar, supercharged with custom filters.
                     </p>

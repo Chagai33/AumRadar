@@ -431,7 +431,7 @@ export const Dashboard: React.FC = () => {
                         <ListMusic className="text-white w-5 h-5" />
                     </div>
                     <h1 className="text-xl font-bold tracking-tight">
-                        Antigravity <span className="text-[#1DB954]">Radar</span>
+                        Aum <span className="text-[#1DB954]">Radar</span>
                     </h1>
                 </div>
 

@@ -5,7 +5,7 @@ from .config import settings
 from .routers import auth, scan
 import os
 
-app = FastAPI(title="Antigravity Spotify Connect")
+app = FastAPI(title="Aum Radar")
 
 # Middleware
 # Always force Secure and SameSite=None. This is required for cross-domain auth (Netlify <-> Cloud Run)

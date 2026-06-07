@@ -12,13 +12,13 @@ const logoVariants = {
     opacity: 1,
     transition: { duration: 0.7, ease: 'easeOut' },
   },
-  // Exit: contract slightly (anticipation) then burst outward and vanish
+  // Exit: contract slightly (anticipation) then burst outward fast and vanish
   exit: {
-    scale: [1, 0.9, 12],
+    scale: [1, 0.9, 14],
     opacity: [1, 1, 0],
     transition: {
-      scale: { duration: 0.8, times: [0, 0.25, 1], ease: 'easeIn' },
-      opacity: { duration: 0.8, times: [0, 0.6, 1], ease: 'easeIn' },
+      scale: { duration: 0.4, times: [0, 0.35, 1], ease: [0.5, 0, 0.75, 0] },
+      opacity: { duration: 0.4, times: [0, 0.55, 1], ease: 'easeIn' },
     },
   },
 };
@@ -28,7 +28,7 @@ const SplashScreen: React.FC = () => (
     initial={{ opacity: 1 }}
     exit={{ opacity: 0 }}
     // Keep the background dark while the logo explodes, then fade it out
-    transition={{ opacity: { delay: 0.45, duration: 0.35, ease: 'easeInOut' } }}
+    transition={{ opacity: { delay: 0.22, duration: 0.25, ease: 'easeInOut' } }}
     className="fixed inset-0 z-50 flex items-center justify-center bg-[#121212] overflow-hidden"
   >
     <motion.img

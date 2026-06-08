@@ -216,8 +216,10 @@ class AdvancedEngine:
             
             concurrency_limit = 5
             
-            start_date_str = settings.get('start_date')
-            end_date_str = settings.get('end_date')
+            start_date_str = settings.get('start_date') or ''
+            end_date_str = settings.get('end_date') or ''
+            if not start_date_str or not end_date_str:
+                raise ValueError("start_date and end_date are required.")
             start_date = datetime.datetime.strptime(start_date_str, '%Y-%m-%d').date()
             end_date = datetime.datetime.strptime(end_date_str, '%Y-%m-%d').date()
             

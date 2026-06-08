@@ -224,6 +224,10 @@ export const Dashboard: React.FC = () => {
     const handleStartScan = async () => {
         try {
             const dateParams = calculateDates();
+            if (!dateParams.start_date || !dateParams.end_date) {
+                alert('Please select a start and end date.');
+                return;
+            }
             setScanDateRange({ start: dateParams.start_date, end: dateParams.end_date });
 
             await axios.post('/api/start', {

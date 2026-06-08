@@ -4,64 +4,49 @@ import logging
 from spotipy.exceptions import SpotifyException
 import threading
 
-# Global locks for Rate Limit Synchronization
+# Global event for rate-limit coordination across threads.
+# Green (set) = all clear. Red (cleared) = one thread is sleeping off a 429.
 rate_limit_event = threading.Event()
-rate_limit_event.set() # Initially Green
-
-# Track consecutive rate-limit hits. Spotipy swallows the real (huge) Retry-After
-# header, so we can't trust its value. Instead, if we keep hitting 429 with no
-# successful call in between, the app is hard rate-limited (often for hours) — bail.
-_rl_lock = threading.Lock()
-_consecutive_rate_limits = 0
-MAX_CONSECUTIVE_RATE_LIMITS = 5
+rate_limit_event.set()
 
 def safe_api_call(func, *args, **kwargs):
     """
     Thread-safe wrapper for Spotify API calls.
-    Blocks all threads if a Rate Limit (429) is hit by any thread.
-    Raises CRITICAL_RATE_LIMIT if the app is hard rate-limited.
+    - Short 429 (Retry-After ≤ 60s): first thread pauses everyone, sleeps, resumes.
+    - Long 429 (Retry-After > 60s): raises CRITICAL_RATE_LIMIT so the scan stops
+      and shows the user exactly how long Spotify is blocking the app.
     """
-    global _consecutive_rate_limits
     while True:
-        rate_limit_event.wait() # Wait if Red Light is on
+        rate_limit_event.wait()  # Block if another thread is sleeping off a 429
 
         try:
-            result = func(*args, **kwargs)
-            # Success — reset the consecutive failure counter
-            with _rl_lock:
-                _consecutive_rate_limits = 0
-            return result
+            return func(*args, **kwargs)
         except SpotifyException as e:
             if e.http_status == 429:
-                # Real Retry-After from Spotify (seconds). With 429 removed from the
-                # client's status_forcelist, the header survives on the exception.
+                # With 429 excluded from status_forcelist, the real Retry-After
+                # header arrives intact (unlike the old MaxRetryError path).
                 hdr = e.headers.get('Retry-After') if e.headers else None
                 retry_after = (int(hdr) + 1) if hdr else 6
 
-                # Bail immediately if Spotify explicitly demands a long wait.
-                # Encode the wait (seconds) after the marker so the scanner can
-                # tell the user exactly how long they're blocked. -1 = unknown.
+                # Long block = Spotify has hard rate-limited the app → stop the scan
+                # and tell the user exactly how long to wait.
                 if retry_after > 60:
                     raise Exception(f"CRITICAL_RATE_LIMIT:{retry_after}")
 
-                # ...or if we keep getting throttled with no successful call in between.
-                with _rl_lock:
-                    _consecutive_rate_limits += 1
-                    hits = _consecutive_rate_limits
-                if hits >= MAX_CONSECUTIVE_RATE_LIMITS:
-                    raise Exception("CRITICAL_RATE_LIMIT:-1")
-
-                # If we are the first to hit the wall, set Red Light
+                # Short block = normal throttle.
+                # Only the FIRST thread to hit the wall sets Red Light and sleeps.
+                # All other threads are already queued at rate_limit_event.wait() above
+                # and will resume automatically when the sleeping thread sets Green Light.
                 if rate_limit_event.is_set():
-                    rate_limit_event.clear() # Red Light - STOP EVERYONE
-                    msg = f"⛔ GLOBAL RATE LIMIT HIT ({hits}/{MAX_CONSECUTIVE_RATE_LIMITS})! Pausing ALL threads for {retry_after}s."
-                    log_message(msg)
+                    rate_limit_event.clear()  # Red Light — stop all threads
+                    log_message(f"⛔ RATE LIMIT HIT. Pausing all threads for {retry_after}s.")
                     time.sleep(retry_after)
                     log_message("✅ Resuming API calls...")
-                    rate_limit_event.set() # Green Light
+                    rate_limit_event.set()  # Green Light — all threads continue
                 else:
-                    # Someone else is already handling the sleep, just wait
-                    time.sleep(1)
+                    # Another thread already set Red Light and is handling the sleep.
+                    # Just wait — rate_limit_event.wait() at the top will block us.
+                    time.sleep(0.1)
             else:
                 raise e
 

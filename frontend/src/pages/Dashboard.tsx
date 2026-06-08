@@ -153,10 +153,10 @@ export const Dashboard: React.FC = () => {
 
                 // Pre-fill Advanced Filters if saved
                 if (data.settings) {
-                    if (data.settings.exclude_artists) {
+                    if (data.settings.exclude_artists?.length > 0) {
                         setExcludedArtists(data.settings.exclude_artists.join('\n'));
                     }
-                    if (data.settings.forbidden_keywords) {
+                    if (data.settings.forbidden_keywords?.length > 0) {
                         setForbiddenKeywords(data.settings.forbidden_keywords.join('\n'));
                     }
                     if (data.settings.exclude_albums !== undefined) setAutoExcludeAlbums(data.settings.exclude_albums);

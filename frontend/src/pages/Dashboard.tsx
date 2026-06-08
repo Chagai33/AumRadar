@@ -500,6 +500,9 @@ export const Dashboard: React.FC = () => {
 
                             <div className="flex justify-between text-xs text-gray-500 font-mono mt-2">
                                 <span>{scanStatus.progress} / {scanStatus.total} Artists</span>
+                                {scanStatus.results_count > 0 && (
+                                    <span className="text-[#1DB954]">{scanStatus.results_count} tracks found</span>
+                                )}
                                 <span>{Math.round(percent)}%</span>
                             </div>
                         </motion.div>

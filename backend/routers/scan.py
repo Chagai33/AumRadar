@@ -121,6 +121,11 @@ def stop_scan():
     scanner.stop_scan()
     return {"status": "stopping"}
 
+@router.post("/dismiss-error")
+def dismiss_error():
+    scanner.dismiss_error()
+    return {"status": "ok"}
+
 class ExportRequest(BaseModel):
     name: str
     uris: List[str]

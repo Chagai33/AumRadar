@@ -545,7 +545,10 @@ export const Dashboard: React.FC = () => {
                             <p className="text-gray-300 mt-1 text-sm">{scanStatus.error || "Too many requests to Spotify. Please wait a while before scanning again."}</p>
                         </div>
                         <button
-                            onClick={() => setScanStatus(prev => ({ ...prev, status: 'idle', error: undefined }))}
+                            onClick={async () => {
+                                setScanStatus(prev => ({ ...prev, status: 'idle', error: undefined }));
+                                try { await axios.post('/api/dismiss-error'); } catch {}
+                            }}
                             className="text-red-400 hover:text-white shrink-0"
                         >
                             <X className="w-5 h-5" />

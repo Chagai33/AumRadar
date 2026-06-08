@@ -411,6 +411,14 @@ class AdvancedEngine:
             if remaining > 0:
                 msg, _ = self._format_rate_limit_msg(remaining)
                 current_state["error"] = msg
+            else:
+                # Timer expired — clear error from GCS and return idle
+                self.state["status"] = "idle"
+                self.state.pop("error", None)
+                self.state.pop("blocked_until", None)
+                self._save_state()
+                current_state["status"] = "idle"
+                current_state.pop("error", None)
 
         rate_limit_until = current_state.get("rate_limit_until", 0)
         if time.time() < rate_limit_until:
@@ -422,6 +430,13 @@ class AdvancedEngine:
     def get_results(self):
         return storage.load_json(RESULTS_FILE, [])
     
+    def dismiss_error(self):
+        self.state["is_running"] = False
+        self.state["status"] = "idle"
+        self.state.pop("error", None)
+        self.state.pop("blocked_until", None)
+        self._save_state()
+
     def stop_scan(self):
         self.state["is_running"] = False
         self.state["status"] = "stopping"

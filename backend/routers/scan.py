@@ -98,7 +98,13 @@ async def run_automation_headless(background_tasks: BackgroundTasks):
 def get_artists():
     artists = scanner._load_artists_cache()
     return sorted(
-        [{"id": a["id"], "name": a["name"]} for a in artists],
+        [{
+            "id": a["id"],
+            "name": a["name"],
+            "genres": a.get("genres", []),
+            "followers": a.get("followers", {}).get("total", 0),
+            "popularity": a.get("popularity", 0),
+        } for a in artists],
         key=lambda x: x["name"].lower()
     )
 

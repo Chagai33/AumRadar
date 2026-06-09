@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, BackgroundTasks
+from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 import datetime
@@ -142,6 +142,28 @@ def stop_scan():
 def dismiss_error():
     scanner.dismiss_error()
     return {"status": "ok"}
+
+def _validate_scan_id(scan_id: str):
+    if not all(c.isdigit() or c == '_' for c in scan_id):
+        raise HTTPException(status_code=400, detail="Invalid scan ID")
+
+@router.get("/history")
+def get_scan_history():
+    return scanner.get_history_index()
+
+@router.get("/history/{scan_id}")
+def get_history_scan(scan_id: str):
+    _validate_scan_id(scan_id)
+    data = scanner.get_history_scan(scan_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    return data
+
+@router.delete("/history/{scan_id}")
+def delete_history_scan(scan_id: str):
+    _validate_scan_id(scan_id)
+    scanner.delete_history_entry(scan_id)
+    return {"status": "deleted"}
 
 class ExportRequest(BaseModel):
     name: str

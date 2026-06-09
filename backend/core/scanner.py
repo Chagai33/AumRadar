@@ -13,6 +13,9 @@ CACHE_DIR = "cache"
 SCAN_STATE_FILE = f"{CACHE_DIR}/scan_state.json"
 RESULTS_FILE = f"{CACHE_DIR}/scan_results.json"
 ARTISTS_CACHE_FILE = f"{CACHE_DIR}/artists_cache.json"
+HISTORY_DIR = f"{CACHE_DIR}/scan_history"
+HISTORY_INDEX_FILE = f"{HISTORY_DIR}/index.json"
+MAX_HISTORY = 50
 
 class AdvancedEngine:
     def __init__(self):
@@ -329,6 +332,7 @@ class AdvancedEngine:
             # Finalize
             self.log(f"DEBUG: Loop finished. Saving {len(results_buffer)} results.")
             storage.save_json(RESULTS_FILE, results_buffer)
+            self._save_to_history(results_buffer, settings)
             
             # Auto Export Logic
             if auto_export_name and results_buffer:
@@ -438,6 +442,51 @@ class AdvancedEngine:
     
     def get_results(self):
         return storage.load_json(RESULTS_FILE, [])
+
+    # ── History ────────────────────────────────────────────────────────────
+    def _save_to_history(self, tracks: list, settings: dict):
+        """Append this scan to the rolling history index (max MAX_HISTORY entries)."""
+        try:
+            scan_id = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            storage.save_json(f"{HISTORY_DIR}/{scan_id}.json", tracks)
+
+            index = storage.load_json(HISTORY_INDEX_FILE, [])
+            selected_ids = settings.get('selected_artist_ids') or []
+            completed = self.state.get("progress", 0) >= self.state.get("total", 1)
+
+            index.insert(0, {
+                "id": scan_id,
+                "created_at": datetime.datetime.now().isoformat(),
+                "start_date": settings.get('start_date', ''),
+                "end_date": settings.get('end_date', ''),
+                "track_count": len(tracks),
+                "partial_scan": bool(selected_ids),
+                "selected_artist_count": len(selected_ids) if selected_ids else None,
+                "album_types": settings.get('album_types', []),
+                "completed": completed,
+            })
+
+            # Rotate: drop oldest entries beyond the limit
+            for old in index[MAX_HISTORY:]:
+                storage.delete_file(f"{HISTORY_DIR}/{old['id']}.json")
+            index = index[:MAX_HISTORY]
+
+            storage.save_json(HISTORY_INDEX_FILE, index)
+            self.log(f"Saved to history ({scan_id}, {len(tracks)} tracks)")
+        except Exception as e:
+            self.log(f"Warning: could not save to history: {e}")
+
+    def get_history_index(self):
+        return storage.load_json(HISTORY_INDEX_FILE, [])
+
+    def get_history_scan(self, scan_id: str):
+        return storage.load_json(f"{HISTORY_DIR}/{scan_id}.json")
+
+    def delete_history_entry(self, scan_id: str):
+        index = storage.load_json(HISTORY_INDEX_FILE, [])
+        index = [e for e in index if e["id"] != scan_id]
+        storage.save_json(HISTORY_INDEX_FILE, index)
+        storage.delete_file(f"{HISTORY_DIR}/{scan_id}.json")
     
     def dismiss_error(self):
         self.state["is_running"] = False

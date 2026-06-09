@@ -112,5 +112,21 @@ class StorageManager:
                 }
             return {}
 
+    def delete_file(self, filename: str):
+        """Delete a file from storage. Silently ignores if not found."""
+        if self.use_cloud:
+            try:
+                blob = self.bucket.blob(filename)
+                blob.delete()
+            except Exception as e:
+                print(f"Error deleting from GCS ({filename}): {e}")
+        else:
+            path = self._get_local_path(filename)
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception as e:
+                print(f"Error deleting local file ({filename}): {e}")
+
 # Global instance
 storage = StorageManager()

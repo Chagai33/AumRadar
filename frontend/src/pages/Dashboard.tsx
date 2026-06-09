@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
-import { LogOut, Search, Calendar, Play, ListMusic, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save, Layers, X, Check } from 'lucide-react';
+import { LogOut, Search, Calendar, Play, ListMusic, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save, Layers, X, Check, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
 
@@ -22,6 +22,18 @@ interface Track {
     album: { id: string, name: string, images: { url: string }[], release_date: string };
     duration_ms: number;
     explicit: boolean;
+}
+
+interface HistoryEntry {
+    id: string;
+    created_at: string;
+    start_date: string;
+    end_date: string;
+    track_count: number;
+    partial_scan: boolean;
+    selected_artist_count: number | null;
+    album_types: string[];
+    completed: boolean;
 }
 
 interface ScanStatus {
@@ -97,6 +109,12 @@ export const Dashboard: React.FC = () => {
     );
     const [excludedArtists, setExcludedArtists] = useState('');
     const [showSettings, setShowSettings] = useState(false);
+
+    // History State
+    const [scanHistory, setScanHistory] = useState<HistoryEntry[]>([]);
+    const [viewingHistory, setViewingHistory] = useState<HistoryEntry | null>(null);
+    const [showHistory, setShowHistory] = useState(false);
+    const [historyLoading, setHistoryLoading] = useState(false);
 
     // Artist Picker State
     const [showArtistPicker, setShowArtistPicker] = useState(false);
@@ -177,7 +195,7 @@ export const Dashboard: React.FC = () => {
         }).catch(e => console.error("Auto config load error", e));
     }, []);
 
-    // Initial load: cache info + one status check
+    // Initial load: cache info + one status check + history
     useEffect(() => {
         checkCacheInfo();
         const checkStatus = async () => {
@@ -193,7 +211,16 @@ export const Dashboard: React.FC = () => {
                 console.error("Status check failed", e);
             }
         };
+        const loadHistory = async () => {
+            try {
+                const res = await axios.get('/api/history');
+                setScanHistory(res.data);
+            } catch (e) {
+                console.error("History load failed", e);
+            }
+        };
         checkStatus();
+        loadHistory();
     }, []);
 
     // Poll only while a scan is running
@@ -206,9 +233,15 @@ export const Dashboard: React.FC = () => {
                 setScanStatus(data);
 
                 if (data.status === 'completed' || data.results_count > results.length) {
-                    const res = await axios.get('/api/results');
-                    setResults(res.data);
-                    setOriginalResults(res.data);
+                    if (!viewingHistory) {
+                        const res = await axios.get('/api/results');
+                        setResults(res.data);
+                        setOriginalResults(res.data);
+                    }
+                    if (data.status === 'completed') {
+                        // Refresh history list so new scan appears
+                        axios.get('/api/history').then(r => setScanHistory(r.data)).catch(() => {});
+                    }
                 }
             } catch (e) {
                 console.error("Status poll failed", e);
@@ -217,6 +250,42 @@ export const Dashboard: React.FC = () => {
 
         return () => clearInterval(interval);
     }, [scanStatus.is_running, results.length]);
+
+    const viewHistoryScan = async (entry: HistoryEntry) => {
+        setHistoryLoading(true);
+        try {
+            const res = await axios.get(`/api/history/${entry.id}`);
+            setResults(res.data);
+            setOriginalResults(res.data);
+            setViewingHistory(entry);
+            setShowHistory(false);
+        } catch {
+            alert('Could not load scan.');
+        } finally {
+            setHistoryLoading(false);
+        }
+    };
+
+    const exitHistoryView = async () => {
+        setViewingHistory(null);
+        try {
+            const res = await axios.get('/api/results');
+            setResults(res.data);
+            setOriginalResults(res.data);
+        } catch {}
+    };
+
+    const deleteHistoryScan = async (id: string, e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!confirm('Delete this scan from history?')) return;
+        try {
+            await axios.delete(`/api/history/${id}`);
+            setScanHistory(prev => prev.filter(h => h.id !== id));
+            if (viewingHistory?.id === id) exitHistoryView();
+        } catch {
+            alert('Could not delete scan.');
+        }
+    };
 
     const openArtistPicker = async () => {
         if (artistList.length === 0) {
@@ -326,34 +395,41 @@ export const Dashboard: React.FC = () => {
     const handleExport = async () => {
         if (results.length === 0) return;
 
-        // Calculate date range string
+        const fmt = (d: Date) => `${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear().toString().slice(-2)}`;
+
         let startD = new Date();
         let endD = new Date();
+        let selSuffix = '';
 
-        if (dateOption === 'last7') {
-            startD.setDate(endD.getDate() - 7);
-        } else if (dateOption === 'last30') {
-            startD.setDate(endD.getDate() - 30);
-        } else if (dateOption === 'sat_to_fri') {
-            const daysSinceFriday = (endD.getDay() + 7 - 5) % 7;
-            endD.setDate(endD.getDate() - daysSinceFriday);
-            startD.setTime(endD.getTime());
-            startD.setDate(endD.getDate() - 6);
-        } else if (dateOption === 'sun_to_sat') {
-            const daysSinceSunday = endD.getDay();
-            startD.setDate(endD.getDate() - daysSinceSunday);
-            endD.setDate(startD.getDate() + 6);
-        } else if (dateOption === 'custom' && customStart && customEnd) {
-            startD = new Date(customStart);
-            endD = new Date(customEnd);
+        if (viewingHistory) {
+            // Viewing a historical scan — use its stored date range and partial flag
+            const [sy, sm, sd] = viewingHistory.start_date.split('-').map(Number);
+            const [ey, em, ed] = viewingHistory.end_date.split('-').map(Number);
+            startD = new Date(sy, sm - 1, sd);
+            endD = new Date(ey, em - 1, ed);
+            selSuffix = viewingHistory.partial_scan ? ' [SEL]' : '';
+        } else {
+            selSuffix = scanStatus.partial_scan ? ' [SEL]' : '';
+            if (dateOption === 'last7') {
+                startD.setDate(endD.getDate() - 7);
+            } else if (dateOption === 'last30') {
+                startD.setDate(endD.getDate() - 30);
+            } else if (dateOption === 'sat_to_fri') {
+                const daysSinceFriday = (endD.getDay() + 7 - 5) % 7;
+                endD.setDate(endD.getDate() - daysSinceFriday);
+                startD.setTime(endD.getTime());
+                startD.setDate(endD.getDate() - 6);
+            } else if (dateOption === 'sun_to_sat') {
+                const daysSinceSunday = endD.getDay();
+                startD.setDate(endD.getDate() - daysSinceSunday);
+                endD.setDate(startD.getDate() + 6);
+            } else if (dateOption === 'custom' && customStart && customEnd) {
+                startD = new Date(customStart);
+                endD = new Date(customEnd);
+            }
         }
 
-        const fmt = (d: Date) => {
-            return `${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear().toString().slice(-2)}`;
-        };
-
         const dateStr = `${fmt(startD)} - ${fmt(endD)}`;
-        const selSuffix = scanStatus.partial_scan ? ' [SEL]' : '';
         const defaultName = `NewReleases ${dateStr}${selSuffix}`;
 
         const name = prompt("Enter a name for your new playlist:", defaultName);
@@ -470,6 +546,12 @@ export const Dashboard: React.FC = () => {
                     <div className="text-sm font-medium text-gray-300 hidden md:block">
                         {user?.display_name}
                     </div>
+                    <button onClick={() => setShowHistory(true)} className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] relative" title="Scan History">
+                        <Clock className="w-5 h-5" />
+                        {scanHistory.length > 0 && (
+                            <span className="absolute top-1 right-1 w-2 h-2 bg-[#1DB954] rounded-full" />
+                        )}
+                    </button>
                     <button onClick={() => setShowAutoSettings(true)} className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] mr-2" title="Automation Settings">
                         <Calendar className="w-5 h-5" />
                     </button>
@@ -856,6 +938,36 @@ export const Dashboard: React.FC = () => {
                     </section>
                 )}
 
+                {/* History View Banner */}
+                {viewingHistory && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="bg-[#1a1400] border border-yellow-600/30 rounded-xl px-5 py-3 mb-6 flex items-center justify-between"
+                    >
+                        <div className="flex items-center gap-3 text-sm">
+                            <Clock className="w-4 h-4 text-yellow-500 shrink-0" />
+                            <span className="text-yellow-300 font-medium">
+                                {viewingHistory.start_date} → {viewingHistory.end_date}
+                            </span>
+                            <span className="text-yellow-700">·</span>
+                            <span className="text-yellow-600">{viewingHistory.track_count} tracks</span>
+                            {viewingHistory.partial_scan && (
+                                <span className="text-xs bg-yellow-900/40 text-yellow-400 border border-yellow-700/40 px-1.5 py-0.5 rounded">SEL</span>
+                            )}
+                            {!viewingHistory.completed && (
+                                <span className="text-xs bg-orange-900/30 text-orange-400 border border-orange-700/30 px-1.5 py-0.5 rounded">Stopped</span>
+                            )}
+                        </div>
+                        <button
+                            onClick={exitHistoryView}
+                            className="text-xs text-gray-500 hover:text-white transition-colors flex items-center gap-1"
+                        >
+                            ← Current results
+                        </button>
+                    </motion.div>
+                )}
+
                 {/* Results Grid Header */}
                 <div className="flex flex-col gap-4 mb-6">
                     <div className="flex items-center justify-between">
@@ -1078,6 +1190,67 @@ export const Dashboard: React.FC = () => {
                         </motion.div>
                     )}
                 </AnimatePresence>
+                {/* History Modal */}
+                <AnimatePresence>
+                    {showHistory && (
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+                            onClick={() => setShowHistory(false)}
+                        >
+                            <div className="bg-[#181818] border border-gray-800 rounded-xl w-full max-w-lg shadow-2xl flex flex-col" style={{maxHeight: '80vh'}} onClick={e => e.stopPropagation()}>
+                                <div className="p-5 border-b border-gray-800 flex items-center justify-between shrink-0">
+                                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                                        <Clock className="w-5 h-5 text-[#1DB954]" /> Scan History
+                                    </h3>
+                                    <button onClick={() => setShowHistory(false)} className="text-gray-500 hover:text-white"><X className="w-5 h-5" /></button>
+                                </div>
+
+                                <div className="overflow-y-auto flex-1">
+                                    {scanHistory.length === 0 ? (
+                                        <p className="text-center text-gray-600 py-16 text-sm">No past scans yet</p>
+                                    ) : scanHistory.map(entry => (
+                                        <div
+                                            key={entry.id}
+                                            onClick={() => viewHistoryScan(entry)}
+                                            className={`flex items-center justify-between px-5 py-4 border-b border-[#1f1f1f] hover:bg-[#222] cursor-pointer transition-colors group ${viewingHistory?.id === entry.id ? 'bg-[#1a2a1a] border-l-2 border-l-[#1DB954]' : ''}`}
+                                        >
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    <span className="text-sm font-medium text-gray-200">
+                                                        {entry.start_date} → {entry.end_date}
+                                                    </span>
+                                                    {entry.partial_scan && (
+                                                        <span className="text-[10px] bg-yellow-900/30 text-yellow-500 border border-yellow-800/40 px-1.5 py-0.5 rounded">SEL</span>
+                                                    )}
+                                                    {!entry.completed && (
+                                                        <span className="text-[10px] bg-orange-900/20 text-orange-500 border border-orange-800/30 px-1.5 py-0.5 rounded">Stopped</span>
+                                                    )}
+                                                </div>
+                                                <div className="text-xs text-gray-600 mt-0.5">
+                                                    {entry.track_count} tracks · {new Date(entry.created_at).toLocaleString()}
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={(e) => deleteHistoryScan(entry.id, e)}
+                                                className="opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-400 transition-all p-1 ml-3 shrink-0"
+                                                title="Delete"
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                                {historyLoading && (
+                                    <div className="p-4 text-center text-gray-500 text-sm border-t border-gray-800">Loading scan...</div>
+                                )}
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
+
                 {/* Artist Picker Modal */}
                 <AnimatePresence>
                     {showArtistPicker && (() => {

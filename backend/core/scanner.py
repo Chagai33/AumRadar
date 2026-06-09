@@ -155,7 +155,8 @@ class AdvancedEngine:
         self.state["progress"] = 0
         self.state["results_count"] = 0
         self.state["logs"] = []
-        self.state.pop("error", None)          # Clear any previous error
+        self.state["partial_scan"] = False
+        self.state.pop("error", None)
         self.state.pop("rate_limit_until", None)
         self.state.pop("blocked_until", None)
         self._save_state()
@@ -210,6 +211,12 @@ class AdvancedEngine:
                 if a['name'].lower().strip() in exclude_names: continue
                 artists.append(a)
             
+            # Optionally limit to a user-selected subset of artists
+            selected_ids = set(settings.get('selected_artist_ids') or [])
+            if selected_ids:
+                artists = [a for a in artists if a['id'] in selected_ids]
+                self.state["partial_scan"] = True
+
             self.state["total"] = len(artists)
             self.state["status"] = "scanning"
             self._save_state()

@@ -34,6 +34,7 @@ interface ScanStatus {
     error?: string;
     retry_after?: number;
     logs?: string[];
+    partial_scan?: boolean;
 }
 
 export const Dashboard: React.FC = () => {
@@ -96,6 +97,14 @@ export const Dashboard: React.FC = () => {
     );
     const [excludedArtists, setExcludedArtists] = useState('');
     const [showSettings, setShowSettings] = useState(false);
+
+    // Artist Picker State
+    const [showArtistPicker, setShowArtistPicker] = useState(false);
+    const [artistList, setArtistList] = useState<{id: string, name: string}[]>([]);
+    const [artistSearch, setArtistSearch] = useState('');
+    const [selectedArtistIds, setSelectedArtistIds] = useState<Set<string> | null>(null); // null = all
+    const [pickerDraft, setPickerDraft] = useState<Set<string>>(new Set());
+    const [pickerAllMode, setPickerAllMode] = useState(true);
 
     // Automation State
     const [showAutoSettings, setShowAutoSettings] = useState(false);
@@ -209,6 +218,25 @@ export const Dashboard: React.FC = () => {
         return () => clearInterval(interval);
     }, [scanStatus.is_running, results.length]);
 
+    const openArtistPicker = async () => {
+        if (artistList.length === 0) {
+            try {
+                const res = await axios.get('/api/artists');
+                if (!res.data.length) { alert('No artist cache found. Run a scan first to load the artist list.'); return; }
+                setArtistList(res.data);
+            } catch { alert('Could not load artist list.'); return; }
+        }
+        if (selectedArtistIds === null) {
+            setPickerAllMode(true);
+            setPickerDraft(new Set());
+        } else {
+            setPickerAllMode(false);
+            setPickerDraft(new Set(selectedArtistIds));
+        }
+        setArtistSearch('');
+        setShowArtistPicker(true);
+    };
+
     const checkCacheInfo = async () => {
         try {
             const res = await axios.get('/api/cache-info');
@@ -238,14 +266,14 @@ export const Dashboard: React.FC = () => {
                 min_liked_songs: minLikedSongs,
                 album_types: albumTypes,
                 refresh_artists: refreshArtists,
-                // New Advanced Filters
                 min_duration_sec: minDurationSec,
                 max_duration_sec: maxDurationSec,
                 forbidden_keywords: forbiddenKeywords.split('\n').map(k => k.trim()).filter(k => k.length > 0),
-                exclude_artists: excludedArtists.split('\n').map(s => s.trim()).filter(s => s.length > 0)
+                exclude_artists: excludedArtists.split('\n').map(s => s.trim()).filter(s => s.length > 0),
+                selected_artist_ids: selectedArtistIds ? Array.from(selectedArtistIds) : null,
             });
 
-            // Immediately mark as running so the polling effect kicks in
+            setSelectedArtistIds(null); // one-time — reset after scan starts
             setScanStatus(prev => ({ ...prev, is_running: true, status: 'scanning' }));
 
         } catch (e: any) {
@@ -325,7 +353,8 @@ export const Dashboard: React.FC = () => {
         };
 
         const dateStr = `${fmt(startD)} - ${fmt(endD)}`;
-        const defaultName = `NewReleases ${dateStr}`;
+        const selSuffix = scanStatus.partial_scan ? ' [SEL]' : '';
+        const defaultName = `NewReleases ${dateStr}${selSuffix}`;
 
         const name = prompt("Enter a name for your new playlist:", defaultName);
         if (!name) return;
@@ -499,7 +528,10 @@ export const Dashboard: React.FC = () => {
                             </div>
 
                             <div className="flex justify-between text-xs text-gray-500 font-mono mt-2">
-                                <span>{scanStatus.progress} / {scanStatus.total} Artists</span>
+                                <span>
+                                    {scanStatus.progress} / {scanStatus.total} Artists
+                                    {scanStatus.partial_scan && <span className="text-yellow-500 ml-1">(selected only)</span>}
+                                </span>
                                 {scanStatus.results_count > 0 && (
                                     <span className="text-[#1DB954]">{scanStatus.results_count} tracks found</span>
                                 )}
@@ -651,8 +683,18 @@ export const Dashboard: React.FC = () => {
                                     )}
                                 </label>
                                 {cacheInfo?.exists && includeFollowed && (
-                                    <span className="text-xs text-gray-500 ml-6">
-                                        {cacheInfo.count} artists · Last updated: {new Date(cacheInfo.last_updated!).toLocaleString()}
+                                    <span className="text-xs text-gray-500 ml-6 flex items-center gap-2">
+                                        <button onClick={openArtistPicker} className="hover:text-[#1DB954] transition-colors hover:underline underline-offset-2">
+                                            {cacheInfo.count} artists · Last updated: {new Date(cacheInfo.last_updated!).toLocaleString()}
+                                        </button>
+                                        {selectedArtistIds !== null && (
+                                            <>
+                                                <span className="text-[#1DB954] font-semibold">({selectedArtistIds.size} selected)</span>
+                                                <button onClick={() => setSelectedArtistIds(null)} className="text-gray-600 hover:text-white transition-colors" title="Clear selection — scan all artists">
+                                                    <X className="w-3 h-3" />
+                                                </button>
+                                            </>
+                                        )}
                                     </span>
                                 )}
                             </div>
@@ -1036,6 +1078,139 @@ export const Dashboard: React.FC = () => {
                         </motion.div>
                     )}
                 </AnimatePresence>
+                {/* Artist Picker Modal */}
+                <AnimatePresence>
+                    {showArtistPicker && (() => {
+                        const filtered = artistSearch.length >= 1
+                            ? artistList.filter(a => a.name.toLowerCase().includes(artistSearch.toLowerCase()))
+                            : artistList.slice(0, 200);
+                        const showingAll = artistSearch.length >= 1;
+                        const isChecked = (id: string) => pickerAllMode || pickerDraft.has(id);
+                        const selectedCount = pickerAllMode ? artistList.length : pickerDraft.size;
+
+                        const toggleArtist = (id: string) => {
+                            if (pickerAllMode) {
+                                const next = new Set(artistList.map(a => a.id));
+                                next.delete(id);
+                                setPickerDraft(next);
+                                setPickerAllMode(false);
+                            } else {
+                                const next = new Set(pickerDraft);
+                                if (next.has(id)) next.delete(id); else next.add(id);
+                                setPickerDraft(next);
+                            }
+                        };
+
+                        const selectVisible = () => {
+                            if (pickerAllMode) return;
+                            const next = new Set(pickerDraft);
+                            filtered.forEach(a => next.add(a.id));
+                            setPickerDraft(next);
+                        };
+
+                        const deselectVisible = () => {
+                            if (pickerAllMode) {
+                                const next = new Set(artistList.map(a => a.id));
+                                filtered.forEach(a => next.delete(a.id));
+                                setPickerDraft(next);
+                                setPickerAllMode(false);
+                            } else {
+                                const next = new Set(pickerDraft);
+                                filtered.forEach(a => next.delete(a.id));
+                                setPickerDraft(next);
+                            }
+                        };
+
+                        const confirmSelection = () => {
+                            if (pickerAllMode || pickerDraft.size === artistList.length) {
+                                setSelectedArtistIds(null);
+                            } else if (pickerDraft.size === 0) {
+                                setSelectedArtistIds(null);
+                            } else {
+                                setSelectedArtistIds(new Set(pickerDraft));
+                            }
+                            setShowArtistPicker(false);
+                        };
+
+                        return (
+                            <motion.div
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                exit={{ opacity: 0 }}
+                                className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+                                onClick={() => setShowArtistPicker(false)}
+                            >
+                                <div className="bg-[#181818] border border-gray-800 rounded-xl w-full max-w-lg shadow-2xl flex flex-col" style={{maxHeight: '85vh'}} onClick={e => e.stopPropagation()}>
+                                    {/* Header */}
+                                    <div className="p-5 border-b border-gray-800 flex items-center justify-between shrink-0">
+                                        <div>
+                                            <h3 className="text-lg font-bold text-white">Select Artists to Scan</h3>
+                                            <p className="text-xs text-gray-500 mt-0.5">
+                                                <span className={selectedCount === artistList.length ? 'text-gray-400' : 'text-[#1DB954] font-semibold'}>
+                                                    {selectedCount}
+                                                </span>
+                                                <span className="text-gray-600"> / {artistList.length} selected</span>
+                                            </p>
+                                        </div>
+                                        <div className="flex items-center gap-2">
+                                            <button onClick={() => { setPickerAllMode(true); setPickerDraft(new Set()); }} className="text-xs text-gray-400 hover:text-white px-2 py-1 rounded hover:bg-[#333] transition-colors">All</button>
+                                            <button onClick={() => setShowArtistPicker(false)} className="text-gray-500 hover:text-white ml-1"><X className="w-5 h-5" /></button>
+                                        </div>
+                                    </div>
+
+                                    {/* Search */}
+                                    <div className="px-4 py-3 border-b border-gray-800 shrink-0">
+                                        <div className="relative">
+                                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                                            <input
+                                                autoFocus
+                                                type="text"
+                                                placeholder="Search artists..."
+                                                value={artistSearch}
+                                                onChange={e => setArtistSearch(e.target.value)}
+                                                className="w-full bg-[#222] border border-[#333] rounded-lg pl-9 pr-4 py-2 text-sm text-white focus:border-[#1DB954] outline-none"
+                                            />
+                                        </div>
+                                        <div className="flex gap-3 mt-2">
+                                            <button onClick={selectVisible} className="text-xs text-gray-400 hover:text-white transition-colors">+ Select visible</button>
+                                            <button onClick={deselectVisible} className="text-xs text-gray-400 hover:text-white transition-colors">− Deselect visible</button>
+                                            {!showingAll && artistList.length > 200 && (
+                                                <span className="text-xs text-gray-600 ml-auto">Showing 200 of {artistList.length} — search to find more</span>
+                                            )}
+                                        </div>
+                                    </div>
+
+                                    {/* List */}
+                                    <div className="overflow-y-auto flex-1">
+                                        {filtered.map(artist => (
+                                            <label key={artist.id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-[#222] cursor-pointer border-b border-[#1a1a1a] last:border-0">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={isChecked(artist.id)}
+                                                    onChange={() => toggleArtist(artist.id)}
+                                                    className="rounded text-[#1DB954] focus:ring-[#1DB954] bg-[#333] border-gray-600 shrink-0"
+                                                />
+                                                <span className="text-sm text-gray-200 truncate">{artist.name}</span>
+                                            </label>
+                                        ))}
+                                        {filtered.length === 0 && (
+                                            <p className="text-center text-gray-600 py-10 text-sm">No artists found</p>
+                                        )}
+                                    </div>
+
+                                    {/* Footer */}
+                                    <div className="p-4 border-t border-gray-800 flex justify-end gap-3 shrink-0">
+                                        <button onClick={() => setShowArtistPicker(false)} className="px-4 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-[#333] transition-colors text-sm font-medium">Cancel</button>
+                                        <button onClick={confirmSelection} className="px-5 py-2 rounded-lg bg-[#1DB954] hover:bg-[#1ed760] text-black font-bold text-sm transition-colors">
+                                            {selectedCount === artistList.length ? 'Scan All' : `Scan ${selectedCount} Artists`}
+                                        </button>
+                                    </div>
+                                </div>
+                            </motion.div>
+                        );
+                    })()}
+                </AnimatePresence>
+
                 {/* Automation Modal */}
                 <AnimatePresence>
                     {showAutoSettings && (

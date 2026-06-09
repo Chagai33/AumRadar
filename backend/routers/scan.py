@@ -41,6 +41,9 @@ class ScanSettings(BaseModel):
     forbidden_keywords: List[str] = [" live ", "session", "לייב", "קאבר", "a capella", "acapella", "FSOE", "techno", "extended", "sped up", "speed up", "intro", "slow", "remaster", "instrumental"]
     exclude_artists: List[str] = [] # List of Artist names or IDs to skip
 
+    # Artist selection (optional — null means scan all)
+    selected_artist_ids: Optional[List[str]] = None
+
     # Automation
     exclude_albums: bool = False  # If True, tracks from albums (4+ tracks same artist/album) are excluded from auto-export
 
@@ -91,6 +94,14 @@ async def run_automation_headless(background_tasks: BackgroundTasks):
     except Exception as e:
         return {"status": "error", "message": str(e)}
     
+@router.get("/artists")
+def get_artists():
+    artists = scanner._load_artists_cache()
+    return sorted(
+        [{"id": a["id"], "name": a["name"]} for a in artists],
+        key=lambda x: x["name"].lower()
+    )
+
 @router.get("/cache-info")
 def get_cache_info():
     return scanner.get_artists_cache_info()

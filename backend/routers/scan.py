@@ -32,7 +32,7 @@ class ScanSettings(BaseModel):
     include_followed: bool = True
     include_liked_songs: bool = False
     min_liked_songs: int = 1
-    album_types: List[str] = ['album', 'single']
+    album_types: List[str] = ['single']
     refresh_artists: bool = False
     
     # Advanced Filters
@@ -45,7 +45,7 @@ class ScanSettings(BaseModel):
     selected_artist_ids: Optional[List[str]] = None
 
     # Automation
-    exclude_albums: bool = False  # If True, tracks from albums (4+ tracks same artist/album) are excluded from auto-export
+    exclude_albums: bool = True  # If True, tracks from albums (4+ tracks same artist/album) are excluded from auto-export
 
 class AutomationConfig(BaseModel):
     enabled: bool = False

@@ -105,7 +105,7 @@ export const Dashboard: React.FC = () => {
     const [minDurationSec, setMinDurationSec] = useState(90);
     const [maxDurationSec, setMaxDurationSec] = useState(270); // Default 4:30
     const [forbiddenKeywords, setForbiddenKeywords] = useState(
-        "live\nsession\nלייב\nקאבר\na capella\nacapella\nFSOE\ntechno\nextended\nsped up\nspeed up\nintro\nslow\nremaster\ninstrumental"
+        "\" live \"\nsession\nלייב\nקאבר\na capella\nacapella\nFSOE\ntechno\nextended\nsped up\nspeed up\nintro\nslow\nremaster\ninstrumental"
     );
     const [excludedArtists, setExcludedArtists] = useState('');
     const [showSettings, setShowSettings] = useState(false);
@@ -130,7 +130,7 @@ export const Dashboard: React.FC = () => {
     const [autoDay, setAutoDay] = useState('friday');
     const [autoTime, setAutoTime] = useState('10:00');
     const [autoDateMode, setAutoDateMode] = useState<'sun_to_sat' | 'last7'>('sun_to_sat');
-    const [autoExcludeAlbums, setAutoExcludeAlbums] = useState(false);
+    const [autoExcludeAlbums, setAutoExcludeAlbums] = useState(true);
     const [autoRefreshArtists, setAutoRefreshArtists] = useState(false);
     const [settingsLoaded, setSettingsLoaded] = useState(false);
 
@@ -337,7 +337,7 @@ export const Dashboard: React.FC = () => {
                 refresh_artists: refreshArtists,
                 min_duration_sec: minDurationSec,
                 max_duration_sec: maxDurationSec,
-                forbidden_keywords: forbiddenKeywords.split('\n').map(k => k.trim()).filter(k => k.length > 0),
+                                                forbidden_keywords: forbiddenKeywords.split('\n').map(k => { k = k.replace('\r', ''); return k.startsWith('"') && k.endsWith('"') && k.length >= 2 ? k.slice(1, -1) : k.trim(); }).filter(k => k.length > 0),
                 exclude_artists: excludedArtists.split('\n').map(s => s.trim()).filter(s => s.length > 0),
                 selected_artist_ids: selectedArtistIds ? Array.from(selectedArtistIds) : null,
             });
@@ -906,8 +906,11 @@ export const Dashboard: React.FC = () => {
                                                             onChange={e => setForbiddenKeywords(e.target.value)}
                                                             rows={4}
                                                             className="w-full bg-[#282828] border border-[#333] rounded px-3 py-2 text-xs font-mono text-gray-300 focus:border-[#1DB954] outline-none resize-none"
-                                                            placeholder="live&#10;remix&#10;..."
+                                                            placeholder="&quot; live &quot;&#10;remix&#10;..."
                                                         />
+                                                        <p className="text-[10px] text-gray-500 mt-1">
+                                                            Tip: Use quotes for exact matches with spaces (e.g., <code className="bg-[#111] px-1 rounded text-yellow-500">&quot; live &quot;</code>).
+                                                        </p>
                                                     </div>
 
                                                     <div className="md:col-span-2 mt-4 pt-4 border-t border-[#333]">
@@ -1569,7 +1572,7 @@ export const Dashboard: React.FC = () => {
                                                             refresh_artists: autoRefreshArtists,
                                                             min_duration_sec: minDurationSec,
                                                             max_duration_sec: maxDurationSec,
-                                                            forbidden_keywords: forbiddenKeywords.split('\n').map(k => k.trim()).filter(k => k.length > 0),
+                                                            forbidden_keywords: forbiddenKeywords.split('\n').map(k => { k = k.replace('\r', ''); return k.startsWith('"') && k.endsWith('"') && k.length >= 2 ? k.slice(1, -1) : k.trim(); }).filter(k => k.length > 0),
                                                             exclude_artists: excludedArtists.split('\n').map(s => s.trim()).filter(s => s.length > 0),
                                                             exclude_albums: autoExcludeAlbums,
                                                         }

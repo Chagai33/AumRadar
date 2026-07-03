@@ -1,26 +1,62 @@
 import time
+import random
 import datetime
 import logging
 from spotipy.exceptions import SpotifyException
 import threading
 
-# Global event for rate-limit coordination across threads.
+# ── Rate-limit coordination across threads ──────────────────────────────────
 # Green (set) = all clear. Red (cleared) = one thread is sleeping off a 429.
 rate_limit_event = threading.Event()
 rate_limit_event.set()
 
+# Global request pacer. Spotify rate-limits the app-wide Client-Credentials token
+# on a rolling window. With 5 threads and no throttle the scan bursts ~9 req/s and
+# Spotify escalates to a multi-hour hard block. We cap the COMBINED start rate of
+# all threads to ~MAX_RPS requests/sec so we stay under budget and never trip it.
+MAX_RPS = 4.0
+MIN_INTERVAL = 1.0 / MAX_RPS  # seconds between request starts, globally
+_pace_lock = threading.Lock()
+_last_call_ts = 0.0
+
+# Backoff escalates while we keep getting throttled, resets on any success.
+# Only affects how long we sleep — never aborts the scan.
+_rl_lock = threading.Lock()
+_backoff_rounds = 0
+MAX_BACKOFF = 60  # cap a short-429 sleep at 60s (CRITICAL path handles real blocks)
+
+def _pace():
+    """Block until at least MIN_INTERVAL has passed since the last request start.
+    Serializes request *timing* across all threads to ~MAX_RPS/sec."""
+    global _last_call_ts
+    with _pace_lock:
+        now = time.monotonic()
+        wait = _last_call_ts + MIN_INTERVAL - now
+        if wait > 0:
+            time.sleep(wait)
+            now = time.monotonic()
+        _last_call_ts = now
+
 def safe_api_call(func, *args, **kwargs):
     """
     Thread-safe wrapper for Spotify API calls.
-    - Short 429 (Retry-After ≤ 60s): first thread pauses everyone, sleeps, resumes.
+    - Paces every call to stay under Spotify's app-wide rate budget.
+    - Short 429 (Retry-After ≤ 60s): one thread pauses everyone, sleeps (with
+      escalating backoff), resumes.
     - Long 429 (Retry-After > 60s): raises CRITICAL_RATE_LIMIT so the scan stops
       and shows the user exactly how long Spotify is blocking the app.
     """
+    global _backoff_rounds
     while True:
         rate_limit_event.wait()  # Block if another thread is sleeping off a 429
+        _pace()                  # Global rate cap — throttle request start rate
 
         try:
-            return func(*args, **kwargs)
+            result = func(*args, **kwargs)
+            # Success — clear the escalating backoff.
+            with _rl_lock:
+                _backoff_rounds = 0
+            return result
         except SpotifyException as e:
             if e.http_status == 429:
                 # With 429 excluded from status_forcelist, the real Retry-After
@@ -33,20 +69,29 @@ def safe_api_call(func, *args, **kwargs):
                 if retry_after > 60:
                     raise Exception(f"CRITICAL_RATE_LIMIT:{retry_after}")
 
-                # Short block = normal throttle.
-                # Only the FIRST thread to hit the wall sets Red Light and sleeps.
-                # All other threads are already queued at rate_limit_event.wait() above
-                # and will resume automatically when the sleeping thread sets Green Light.
-                if rate_limit_event.is_set():
-                    rate_limit_event.clear()  # Red Light — stop all threads
-                    log_message(f"⛔ RATE LIMIT HIT. Pausing all threads for {retry_after}s.")
-                    time.sleep(retry_after)
+                # Short block = normal throttle. Exactly ONE thread becomes the
+                # handler per round (guarded by the lock, so no lockstep clear);
+                # everyone else loops back to rate_limit_event.wait() above.
+                became_handler = False
+                with _rl_lock:
+                    if rate_limit_event.is_set():
+                        rate_limit_event.clear()  # Red Light — stop all threads
+                        _backoff_rounds += 1
+                        rounds = _backoff_rounds
+                        became_handler = True
+
+                if became_handler:
+                    sleep_for = min(retry_after * (2 ** min(rounds - 1, 4)), MAX_BACKOFF)
+                    log_message(f"⛔ RATE LIMIT HIT (round {rounds}). Pausing all threads for {sleep_for}s.")
+                    time.sleep(sleep_for)
                     log_message("✅ Resuming API calls...")
                     rate_limit_event.set()  # Green Light — all threads continue
                 else:
-                    # Another thread already set Red Light and is handling the sleep.
-                    # Just wait — rate_limit_event.wait() at the top will block us.
+                    # Another thread is handling the sleep. Wait, then add jitter
+                    # before retrying so threads don't resume in lockstep and
+                    # immediately re-burst the API.
                     time.sleep(0.1)
+                    time.sleep(random.uniform(0, 0.3))
             else:
                 raise e
 

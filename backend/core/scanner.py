@@ -7,6 +7,7 @@ import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from .storage_manager import storage
+from .engine import safe_api_call
 
 # Constants
 CACHE_DIR = "cache"
@@ -74,31 +75,33 @@ class AdvancedEngine:
     async def fetch_all_followed_artists(self, sp):
         artists = []
         last_artist_id = None
-        
+
+        # Any failure here must abort the scan loudly. Silently proceeding with a
+        # partial artist list (and caching it) poisons every future scan.
         while True:
-            try:
-                loop = asyncio.get_event_loop()
-                results = await loop.run_in_executor(None, lambda: sp.current_user_followed_artists(limit=50, after=last_artist_id))
-                
-                chunk = results['artists']['items']
-                if not chunk: break
-                    
-                artists.extend(chunk)
-                last_artist_id = chunk[-1]['id']
-                
-                self.log(f"Fetched {len(artists)} artists so far...")
-                self.state["current_artist"] = f"Loading Artist List ({len(artists)} found)..."
-                self._save_state()
-                
-                if len(chunk) < 50:
-                    break
-            except Exception as e:
-                self.log(f"Error fetching artists: {e}")
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(
+                None,
+                lambda: safe_api_call(sp.current_user_followed_artists, limit=50, after=last_artist_id)
+            )
+
+            chunk = results['artists']['items']
+            if not chunk: break
+
+            artists.extend(chunk)
+            last_artist_id = chunk[-1]['id']
+
+            self.log(f"Fetched {len(artists)} artists so far...")
+            self.state["current_artist"] = f"Loading Artist List ({len(artists)} found)..."
+            self._save_state()
+
+            if len(chunk) < 50:
                 break
-        
+
+        # Only cache a complete list — we only get here if pagination finished.
         if artists:
             self._save_artists_cache(artists)
-            
+
         return artists
 
 
@@ -108,39 +111,39 @@ class AdvancedEngine:
         offset = 0
         limit = 50
         
+        # Any failure here must abort the scan loudly — a partial artist set from
+        # Liked Songs silently changes what gets scanned.
         while True:
-            try:
-                loop = asyncio.get_event_loop()
-                results = await loop.run_in_executor(None, lambda: sp.current_user_saved_tracks(limit=limit, offset=offset))
-                items = results['items']
-                
-                if not items:
-                    break
-                    
-                for item in items:
-                    track = item['track']
-                    if not track: continue
-                    for artist in track['artists']:
-                        aid = artist['id']
-                        if aid not in artist_counts:
-                            artist_counts[aid] = {'count': 0, 'artist': artist}
-                        artist_counts[aid]['count'] += 1
-                
-                offset += limit
-                self.log(f"Scanned {offset} liked songs...")
-                self.state["current_artist"] = f"Scanning Liked Songs ({len(artist_counts)} artists found)..."
-                
-                # Safety break for huge libraries (optional, but good practice)
-                if offset > 10000: 
-                    break
-                    
-                if len(items) < limit:
-                    break
-                    
-            except Exception as e:
-                self.log(f"Error fetching liked songs: {e}")
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(
+                None,
+                lambda: safe_api_call(sp.current_user_saved_tracks, limit=limit, offset=offset)
+            )
+            items = results['items']
+
+            if not items:
                 break
-                
+
+            for item in items:
+                track = item['track']
+                if not track: continue
+                for artist in track['artists']:
+                    aid = artist['id']
+                    if aid not in artist_counts:
+                        artist_counts[aid] = {'count': 0, 'artist': artist}
+                    artist_counts[aid]['count'] += 1
+
+            offset += limit
+            self.log(f"Scanned {offset} liked songs...")
+            self.state["current_artist"] = f"Scanning Liked Songs ({len(artist_counts)} artists found)..."
+
+            # Safety break for huge libraries (optional, but good practice)
+            if offset > 10000:
+                break
+
+            if len(items) < limit:
+                break
+
         # Filter by min_count
         filtered_artists = []
         for data in artist_counts.values():
@@ -190,8 +193,8 @@ class AdvancedEngine:
                      self.log("Fetching followed artists from Spotify...")
                      self.state["status"] = "fetching_artists" # generic status
                      self._save_state()
+                     # Saves the cache internally on complete success; raises on failure
                      followed_artists = await self.fetch_all_followed_artists(sp)
-                     self._save_artists_cache(followed_artists)
 
             liked_artists = []
             if include_liked:
@@ -372,8 +375,21 @@ class AdvancedEngine:
             self.state["status"] = "completed"
             
         except Exception as e:
+            err_msg = str(e)
             self.state["status"] = "error"
-            self.state["error"] = str(e)
+            if "CRITICAL_RATE_LIMIT" in err_msg:
+                # Hard rate-limit outside the batch loop (e.g. while fetching the
+                # artist list) — show the same transparent message as in-scan blocks.
+                try:
+                    seconds = int(err_msg.split("CRITICAL_RATE_LIMIT:")[1].split()[0])
+                except Exception:
+                    seconds = -1
+                msg, blocked_until = self._format_rate_limit_msg(seconds)
+                self.state["error"] = msg
+                if blocked_until:
+                    self.state["blocked_until"] = blocked_until
+            else:
+                self.state["error"] = err_msg
             self.log(f"CRITICAL SCAN ERROR: {e}")
             import traceback
             traceback.print_exc()

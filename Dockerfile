@@ -12,6 +12,11 @@ COPY backend backend
 # Set python path
 ENV PYTHONPATH=/app
 
+# Flush every print() straight to Cloud Logging — without this, stdout is
+# block-buffered: log lines arrive late in bursts with wrong timestamps and
+# are lost entirely if the container dies mid-scan.
+ENV PYTHONUNBUFFERED=1
+
 # Run Gunicorn
 # Cloud Run injects PORT, default is 8080.
 CMD exec gunicorn --bind 0.0.0.0:$PORT --workers 1 --worker-class uvicorn.workers.UvicornWorker --forwarded-allow-ips="*" --log-level debug backend.main:app --timeout 120

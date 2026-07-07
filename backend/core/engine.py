@@ -1,99 +1,103 @@
 import time
-import random
 import datetime
 import logging
 from spotipy.exceptions import SpotifyException
 import threading
 
-# ── Rate-limit coordination across threads ──────────────────────────────────
-# Green (set) = all clear. Red (cleared) = one thread is sleeping off a 429.
-rate_limit_event = threading.Event()
-rate_limit_event.set()
+# ── Global adaptive rate limiter (AIMD) ─────────────────────────────────────
+# Spotify rate-limits the app-wide token on a rolling window. We pace the
+# COMBINED request start rate of all threads and adapt it to the real budget:
+#   - any new 429 episode  → halve the rate (multiplicative decrease)
+#   - INCREASE_AFTER consecutive successes → +INCREASE_STEP rps (additive increase)
+# A shared _blocked_until timestamp holds ALL threads through a 429's
+# Retry-After window; in-flight stragglers that 429 during an active block only
+# EXTEND the window — they never halve the rate again (no phantom rounds).
+START_RPS = 4.0          # proven clean on the 2026-07-03 full scan
+MIN_RPS = 1.0
+CEIL_RPS = 5.0
+INCREASE_STEP = 0.25
+INCREASE_AFTER = 200     # consecutive successes before stepping the rate up
 
-# Global request pacer. Spotify rate-limits the app-wide Client-Credentials token
-# on a rolling window. With 5 threads and no throttle the scan bursts ~9 req/s and
-# Spotify escalates to a multi-hour hard block. We cap the COMBINED start rate of
-# all threads to ~MAX_RPS requests/sec so we stay under budget and never trip it.
-MAX_RPS = 4.0
-MIN_INTERVAL = 1.0 / MAX_RPS  # seconds between request starts, globally
-_pace_lock = threading.Lock()
+_pace_lock = threading.Lock()    # serializes request dispatch (FIFO pacing)
+_state_lock = threading.Lock()   # guards the small mutable state below
+_current_rps = START_RPS
 _last_call_ts = 0.0
-
-# Backoff escalates while we keep getting throttled, resets on any success.
-# Only affects how long we sleep — never aborts the scan.
-_rl_lock = threading.Lock()
-_backoff_rounds = 0
-MAX_BACKOFF = 60  # cap a short-429 sleep at 60s (CRITICAL path handles real blocks)
+_blocked_until = 0.0             # monotonic: no request may start before this
+_success_streak = 0
 
 def _pace():
-    """Block until at least MIN_INTERVAL has passed since the last request start.
-    Serializes request *timing* across all threads to ~MAX_RPS/sec."""
+    """Block until (a) the shared 429 window has passed and (b) at least
+    1/_current_rps seconds since the last request start. One thread paces at a
+    time (FIFO); state is sampled in short slices so a 429 reported while we
+    sleep can extend the block without waiting on us."""
     global _last_call_ts
     with _pace_lock:
-        now = time.monotonic()
-        wait = _last_call_ts + MIN_INTERVAL - now
-        if wait > 0:
-            time.sleep(wait)
-            now = time.monotonic()
-        _last_call_ts = now
+        while True:
+            with _state_lock:
+                now = time.monotonic()
+                wait = max(_blocked_until - now,
+                           _last_call_ts + (1.0 / _current_rps) - now)
+                if wait <= 0:
+                    _last_call_ts = now
+                    return
+            time.sleep(min(wait, 1.0))
 
 def safe_api_call(func, *args, **kwargs):
     """
     Thread-safe wrapper for Spotify API calls.
-    - Paces every call to stay under Spotify's app-wide rate budget.
-    - Short 429 (Retry-After ≤ 60s): one thread pauses everyone, sleeps (with
-      escalating backoff), resumes.
+    - Paces every call to stay under Spotify's app-wide rate budget (adaptive).
+    - Short 429 (Retry-After ≤ 60s): blocks all threads for the window, halves
+      the global rate once per episode, then resumes automatically.
     - Long 429 (Retry-After > 60s): raises CRITICAL_RATE_LIMIT so the scan stops
       and shows the user exactly how long Spotify is blocking the app.
     """
-    global _backoff_rounds
+    global _current_rps, _blocked_until, _success_streak
     while True:
-        rate_limit_event.wait()  # Block if another thread is sleeping off a 429
-        _pace()                  # Global rate cap — throttle request start rate
+        _pace()
 
         try:
             result = func(*args, **kwargs)
-            # Success — clear the escalating backoff.
-            with _rl_lock:
-                _backoff_rounds = 0
-            return result
         except SpotifyException as e:
-            if e.http_status == 429:
-                # With 429 excluded from status_forcelist, the real Retry-After
-                # header arrives intact (unlike the old MaxRetryError path).
-                hdr = e.headers.get('Retry-After') if e.headers else None
-                retry_after = (int(hdr) + 1) if hdr else 6
+            if e.http_status != 429:
+                raise
+            # With 429 excluded from status_forcelist, the real Retry-After
+            # header arrives intact (unlike the old MaxRetryError path).
+            hdr = e.headers.get('Retry-After') if e.headers else None
+            retry_after = (int(hdr) + 1) if hdr else 6
 
-                # Long block = Spotify has hard rate-limited the app → stop the scan
-                # and tell the user exactly how long to wait.
-                if retry_after > 60:
-                    raise Exception(f"CRITICAL_RATE_LIMIT:{retry_after}")
+            # Long block = Spotify has hard rate-limited the app → stop the scan
+            # and tell the user exactly how long to wait.
+            if retry_after > 60:
+                raise Exception(f"CRITICAL_RATE_LIMIT:{retry_after}")
 
-                # Short block = normal throttle. Exactly ONE thread becomes the
-                # handler per round (guarded by the lock, so no lockstep clear);
-                # everyone else loops back to rate_limit_event.wait() above.
-                became_handler = False
-                with _rl_lock:
-                    if rate_limit_event.is_set():
-                        rate_limit_event.clear()  # Red Light — stop all threads
-                        _backoff_rounds += 1
-                        rounds = _backoff_rounds
-                        became_handler = True
-
-                if became_handler:
-                    sleep_for = min(retry_after * (2 ** min(rounds - 1, 4)), MAX_BACKOFF)
-                    log_message(f"⛔ RATE LIMIT HIT (round {rounds}). Pausing all threads for {sleep_for}s.")
-                    time.sleep(sleep_for)
-                    log_message("✅ Resuming API calls...")
-                    rate_limit_event.set()  # Green Light — all threads continue
-                else:
-                    # Another thread is handling the sleep. Wait, then add jitter
-                    # before retrying so threads don't resume in lockstep and
-                    # immediately re-burst the API.
-                    time.sleep(0.1)
-                    time.sleep(random.uniform(0, 0.3))
-            else:
-                raise e
+            target = time.monotonic() + retry_after
+            msg = None
+            with _state_lock:
+                _success_streak = 0
+                # New episode only if we're not already inside a block window —
+                # in-flight stragglers extend the window but don't re-halve.
+                new_episode = time.monotonic() >= _blocked_until
+                _blocked_until = max(_blocked_until, target)
+                if new_episode:
+                    old = _current_rps
+                    _current_rps = max(MIN_RPS, _current_rps / 2)
+                    msg = (f"⛔ 429 from Spotify — pausing all requests {retry_after}s, "
+                           f"rate {old:.2f}→{_current_rps:.2f} rps")
+            if msg:
+                log_message(msg)
+            continue  # loop → _pace() waits out the shared block, then retries
+        else:
+            msg = None
+            with _state_lock:
+                _success_streak += 1
+                if _success_streak >= INCREASE_AFTER and _current_rps < CEIL_RPS:
+                    _success_streak = 0
+                    old = _current_rps
+                    _current_rps = min(CEIL_RPS, _current_rps + INCREASE_STEP)
+                    msg = f"📈 Rate limit healthy — stepping up {old:.2f}→{_current_rps:.2f} rps"
+            if msg:
+                log_message(msg)
+            return result
 
 
 # Configure logging
@@ -234,30 +238,22 @@ def get_tracks_for_albums_in_batch(sp, album_ids):
                         items = album['tracks']['items']
                         for t in items:
                             t['album'] = {
-                                'id': album['id'], 
+                                'id': album['id'],
                                 'name': album['name'],
-                                'images': album['images'], 
+                                'images': album['images'],
                                 'release_date': album['release_date']
                             }
                         all_tracks[aid] = items
                     else:
                         all_tracks[aid] = []
-        except SpotifyException as e:
-            if e.http_status == 429:
-                retry_after = int(e.headers.get('Retry-After', 5))
-                log_message(f"429 Too Many Requests (Batch). Retrying after {retry_after} seconds.")
-                time.sleep(retry_after)
-                continue # Retry same chunk
-            else:
-                log_message(f"SpotifyException in batch: {e}")
         except Exception as e:
-            # Propagate hard rate-limit so the scanner can stop and report it
+            # 429s never escape safe_api_call (it paces and retries internally);
+            # only a hard rate-limit surfaces — propagate it so the scan stops.
             if "CRITICAL_RATE_LIMIT" in str(e):
                 raise
             log_message(f"Error in batch fetch: {e}")
 
         idx += batch_size
-        time.sleep(0.5) # Gentle cooldown between batches
     return all_tracks
 
 def get_new_releases(sp, artist_id, start_date, end_date, filter_options={}):

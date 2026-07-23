@@ -1,0 +1,9 @@
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Virtual environment (rebuilt from backend/requirements.txt; never committed)
+venv/
+
+# Editor settings
+.vscode/

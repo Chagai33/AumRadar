@@ -133,6 +133,21 @@ def get_scan_status():
 def get_scan_results():
     return scanner.get_results()
 
+@router.get("/checkpoint")
+def get_checkpoint():
+    # Resumable-scan summary for the frontend banner (exists / resumable / counts).
+    return scanner.get_checkpoint_info()
+
+@router.post("/resume")
+async def resume_scan(background_tasks: BackgroundTasks, sp=Depends(get_spotify_client)):
+    # Continue a blocked/interrupted scan from its checkpoint on the frozen artist
+    # snapshot. Stays a BackgroundTask for now; Phase 4 will trigger a Cloud Run Job.
+    if scanner.get_status()["is_running"]:
+        return {"status": "error", "message": "Scan already running"}
+    app_sp = get_app_client()
+    background_tasks.add_task(scanner.resume_scan, sp, app_sp)
+    return {"status": "resumed"}
+
 @router.post("/stop")
 def stop_scan():
     scanner.stop_scan()

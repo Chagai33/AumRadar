@@ -7,7 +7,7 @@ import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from .storage_manager import storage
-from .engine import safe_api_call
+from .engine import safe_api_call, ScanInterruptedException, reset_pacing
 
 # Constants
 CACHE_DIR = "cache"
@@ -17,6 +17,12 @@ ARTISTS_CACHE_FILE = f"{CACHE_DIR}/artists_cache.json"
 HISTORY_DIR = f"{CACHE_DIR}/scan_history"
 HISTORY_INDEX_FILE = f"{HISTORY_DIR}/index.json"
 MAX_HISTORY = 50
+
+# Resilience: the frozen artist list for the in-flight scan (written ONCE) and the
+# dynamic per-chunk progress (results + position). Split so we never re-upload the
+# ~3MB artist list on every chunk — only the ~2MB-max results ride in the checkpoint.
+SNAPSHOT_FILE = f"{CACHE_DIR}/scan_artists_snapshot.json"
+CHECKPOINT_FILE = f"{CACHE_DIR}/scan_checkpoint.json"
 
 class AdvancedEngine:
     def __init__(self):
@@ -44,6 +50,29 @@ class AdvancedEngine:
     def _save_state(self):
         self.state["heartbeat"] = time.time()
         storage.save_json(SCAN_STATE_FILE, self.state)
+
+    def _save_checkpoint(self, next_index, total, results_buffer, settings,
+                         auto_export_name, status, blocked_until=0):
+        """Persist the DYNAMIC scan progress after each chunk (and on every stop
+        path). The frozen artist list lives separately in SNAPSHOT_FILE (written
+        once), so this write stays ~2MB max and never re-uploads the ~3MB artists.
+
+        next_index = the artist index to RESUME from. On a mid-chunk stop we pass
+        the chunk's own start index i (not i+chunk_size) so the interrupted chunk
+        re-runs on resume; the uri-dedup (Phase 2) removes any overlap.
+        status: in_progress | blocked_resumable | interrupted_error.
+        NOTE: settings must already carry resolved (non-'DYNAMIC') start/end dates
+        so a resume runs the exact same date range."""
+        storage.save_json(CHECKPOINT_FILE, {
+            "status": status,
+            "next_index": next_index,
+            "total": total,
+            "results": results_buffer,
+            "settings": settings,
+            "auto_export_name": auto_export_name,
+            "blocked_until": blocked_until,
+            "heartbeat": time.time(),
+        })
 
     def log(self, msg):
         print(msg) 
@@ -155,7 +184,12 @@ class AdvancedEngine:
     async def scan_process(self, sp, settings, app_sp=None, auto_export_name=None):
         # Use App Client for heavy lifting if provided, else fallback to User Client
         work_sp = app_sp if app_sp else sp
-        
+
+        # Clear the process-global pacing state (rate, block window, breather
+        # counter, and the _CRITICAL_ABORT latch) so a flag left set by a previous
+        # blocked scan can't instantly abort this fresh one.
+        reset_pacing()
+
         self.state["is_running"] = True
         self.state["status"] = "initializing"
         self.state["progress"] = 0
@@ -166,7 +200,14 @@ class AdvancedEngine:
         self.state.pop("rate_limit_until", None)
         self.state.pop("blocked_until", None)
         self._save_state()
-        
+
+        # Fresh scan abandons any prior resumable state ("new scan" semantics): a
+        # blocked/interrupted checkpoint from a previous run is discarded here so it
+        # can't be mistaken for THIS scan's progress. A resume goes through
+        # resume_scan(), never this method.
+        storage.delete_file(CHECKPOINT_FILE)
+        storage.delete_file(SNAPSHOT_FILE)
+
         try:
             # 1. Gather Artists
             refresh_artists = settings.get('refresh_artists', True)
@@ -226,154 +267,29 @@ class AdvancedEngine:
             self.state["total"] = len(artists)
             self.state["status"] = "scanning"
             self._save_state()
+
+            # Freeze the EXACT artist list this scan runs on — written ONCE, never
+            # per-chunk. Phase 2's resume reads this to continue from next_index
+            # without re-fetching (option א': artists added later wait for the next
+            # scan). Full artist objects kept (future-proofing).
+            storage.save_json(SNAPSHOT_FILE, artists)
             
-            concurrency_limit = 5
+            # Fresh scan: start at index 0 with an empty results buffer and an
+            # empty dedup set. From here the logic is IDENTICAL to a resume
+            # (which passes a loaded buffer + next_index), so both run through
+            # ONE shared method (_scan_and_finalize) and can never drift apart.
+            await self._scan_and_finalize(
+                work_sp, sp, artists, settings, auto_export_name,
+                results_buffer=[], seen=set(), start_index=0
+            )
             
-            start_date_str = settings.get('start_date') or ''
-            end_date_str = settings.get('end_date') or ''
-            if not start_date_str or not end_date_str:
-                raise ValueError("start_date and end_date are required.")
-            start_date = datetime.datetime.strptime(start_date_str, '%Y-%m-%d').date()
-            end_date = datetime.datetime.strptime(end_date_str, '%Y-%m-%d').date()
-            
-            # Album Types (include_groups)
-            album_types = settings.get('album_types', ['album', 'single'])
-            include_groups_str = ",".join(album_types)
-            
-            # Filter Config
-            filter_config = {
-                "min_duration_ms": settings.get('min_duration_sec', 90) * 1000,
-                "max_duration_ms": settings.get('max_duration_sec', 270) * 1000,
-                "forbidden_keywords": settings.get('forbidden_keywords', []),
-                "include_groups": include_groups_str
-            }
-
-            from .engine import process_artist
-            
-            results_buffer = []
-            loop = asyncio.get_event_loop()
-            
-            # THREAD POOL for Synchronous Engine (Matches legacy script max_workers=5)
-            executor = ThreadPoolExecutor(max_workers=5)
-            
-            chunk_size = 20
-            self.log(f"DEBUG: Starting scan loop for {len(artists)} artists")
-            
-            critical_error = False
-            critical_seconds = -1
-
-            for i in range(0, len(artists), chunk_size):
-                if not self.state["is_running"]: break
-
-                chunk = artists[i:i + chunk_size]
-                self.state["current_artist"] = f"Processing batch {i}-{i+len(chunk)}"
-
-                tasks = []
-                for artist in chunk:
-                    # Run sync function in thread
-                    task = loop.run_in_executor(
-                        executor,
-                        process_artist,
-                        work_sp,          # App Token (or User Token)
-                        artist,
-                        [],               # exclusion_artists handled above
-                        [],               # no_filter_artists
-                        start_date,
-                        end_date,
-                        filter_config
-                    )
-                    tasks.append(task)
-
-                # Wait for batch
-                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                for res in batch_results:
-                    if isinstance(res, Exception):
-                        err_msg = str(res)
-                        print(f"Batch Error: {err_msg}")
-
-                        if "CRITICAL_RATE_LIMIT" in err_msg:
-                            self.log(f"⛔ CRITICAL ERROR: {err_msg}")
-                            try:
-                                critical_seconds = int(err_msg.split("CRITICAL_RATE_LIMIT:")[1].split()[0])
-                            except Exception:
-                                critical_seconds = -1
-                            critical_error = True
-                            break
-                        continue
-
-                    if not res: continue
-
-                    kept, excluded = res
-                    if kept:
-                        results_buffer.extend(kept)
-
-                # Stop everything on a hard rate-limit — set the error LAST so nothing overwrites it
-                if critical_error:
-                    msg, blocked_until = self._format_rate_limit_msg(critical_seconds)
-                    self.state["is_running"] = False
-                    self.state["status"] = "error"
-                    self.state["error"] = msg
-                    if blocked_until:
-                        self.state["blocked_until"] = blocked_until
-                    self.state["results_count"] = len(results_buffer)
-                    self._save_state()
-                    break
-
-                self.state["progress"] += len(chunk)
-                self.state["results_count"] = len(results_buffer)
-                self._save_state()
-
-                # Small breathe
-                await asyncio.sleep(0.5)
-
-            # If we aborted on a critical error, skip finalize/auto-export entirely
-            if critical_error:
-                self.log("Scan aborted due to Spotify rate limit.")
-                return
-
-            # Finalize
-            self.log(f"DEBUG: Loop finished. Saving {len(results_buffer)} results.")
-            storage.save_json(RESULTS_FILE, results_buffer)
-            self._save_to_history(results_buffer, settings)
-            
-            # Auto Export Logic
-            if auto_export_name and results_buffer:
-                self.log(f"Starting Auto-Export to playlist '{auto_export_name}'...")
-                try:
-                    export_tracks = results_buffer
-
-                    # Album exclusion: remove tracks from albums with 4+ tracks (same artist + album)
-                    if settings.get('exclude_albums', False):
-                        from collections import defaultdict
-                        groups = defaultdict(list)
-                        for t in results_buffer:
-                            album_name  = (t.get('album') or {}).get('name', '')
-                            artist_name = ((t.get('artists') or [{}])[0]).get('name', '')
-                            groups[f"{artist_name}::{album_name}"].append(t)
-                        album_keys = {k for k, v in groups.items() if len(v) >= 4}
-                        export_tracks = [
-                            t for t in results_buffer
-                            if f"{((t.get('artists') or [{}])[0]).get('name','')}::{(t.get('album') or {}).get('name','')}" not in album_keys
-                        ]
-                        self.log(f"Album exclusion: removed {len(results_buffer) - len(export_tracks)} tracks from {len(album_keys)} albums")
-
-                    if export_tracks:
-                        # auto_export_name already contains the date range (built in scan.py)
-                        user_id = sp.current_user()['id']
-                        pl = sp.user_playlist_create(user_id, auto_export_name, public=False)
-                        uris = [t['uri'] for t in export_tracks]
-                        for j in range(0, len(uris), 100):
-                            sp.playlist_add_items(pl['id'], uris[j:j+100])
-                        self.log(f"SUCCESS: Auto-exported {len(export_tracks)} tracks to '{auto_export_name}'")
-                    else:
-                        self.log("No tracks to export after album exclusion.")
-                except Exception as exp:
-                    self.log(f"ERROR: Auto-export failed: {exp}")
-            
-            self.state["results_count"] = len(results_buffer)
-            self.state["status"] = "completed"
-            
+        except ScanInterruptedException as e:
+            # Transient failure exhausted retries BEFORE the scan loop (e.g. while
+            # loading the artist list) — nothing scanned yet, so nothing to save.
+            self.state["status"] = "interrupted_error"
+            self.state["error"] = ("Scan interrupted by a network or server error "
+                                   "while loading data. Please try again.")
+            self.log(f"SCAN INTERRUPTED (pre-loop): {e}")
         except Exception as e:
             err_msg = str(e)
             self.state["status"] = "error"
@@ -395,6 +311,273 @@ class AdvancedEngine:
             traceback.print_exc()
         finally:
             self.log("DEBUG: scan_process cleanup (finally block).")
+            self.state["is_running"] = False
+            self._save_state()
+
+    async def _scan_and_finalize(self, work_sp, sp, artists, settings,
+                                 auto_export_name, results_buffer, seen, start_index):
+        """Shared scan body for BOTH a fresh scan_process and a resume_scan. Runs
+        the chunk loop from start_index, dedups results by uri, checkpoints after
+        every chunk (and on every stop path), and on full completion writes
+        RESULTS_FILE + history, clears the checkpoint/snapshot, and runs the
+        auto-export. ONE code path, so fresh and resume can never drift apart —
+        every Phase 1 safety-net fix applies to resume automatically."""
+        start_date_str = settings.get('start_date') or ''
+        end_date_str = settings.get('end_date') or ''
+        if not start_date_str or not end_date_str:
+            raise ValueError("start_date and end_date are required.")
+        start_date = datetime.datetime.strptime(start_date_str, '%Y-%m-%d').date()
+        end_date = datetime.datetime.strptime(end_date_str, '%Y-%m-%d').date()
+
+        # Album Types (include_groups)
+        album_types = settings.get('album_types', ['album', 'single'])
+        include_groups_str = ",".join(album_types)
+
+        # Filter Config
+        filter_config = {
+            "min_duration_ms": settings.get('min_duration_sec', 90) * 1000,
+            "max_duration_ms": settings.get('max_duration_sec', 270) * 1000,
+            "forbidden_keywords": settings.get('forbidden_keywords', []),
+            "include_groups": include_groups_str
+        }
+
+        from .engine import process_artist
+
+        loop = asyncio.get_event_loop()
+
+        # THREAD POOL for Synchronous Engine (Matches legacy script max_workers=5)
+        executor = ThreadPoolExecutor(max_workers=5)
+
+        chunk_size = 20
+        self.log(f"DEBUG: Scan loop over {len(artists)} artists from index {start_index}")
+
+        critical_error = False
+        critical_seconds = -1
+        interrupted_error = False
+
+        for i in range(start_index, len(artists), chunk_size):
+            if not self.state["is_running"]: break
+
+            chunk = artists[i:i + chunk_size]
+            self.state["current_artist"] = f"Processing batch {i}-{i+len(chunk)}"
+
+            tasks = []
+            for artist in chunk:
+                # Run sync function in thread
+                task = loop.run_in_executor(
+                    executor,
+                    process_artist,
+                    work_sp,          # App Token (or User Token)
+                    artist,
+                    [],               # exclusion_artists handled above
+                    [],               # no_filter_artists
+                    start_date,
+                    end_date,
+                    filter_config
+                )
+                tasks.append(task)
+
+            # Wait for batch
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for res in batch_results:
+                if isinstance(res, Exception):
+                    err_msg = str(res)
+                    print(f"Batch Error: {err_msg}")
+
+                    if "CRITICAL_RATE_LIMIT" in err_msg:
+                        self.log(f"⛔ CRITICAL ERROR: {err_msg}")
+                        try:
+                            critical_seconds = int(err_msg.split("CRITICAL_RATE_LIMIT:")[1].split()[0])
+                        except Exception:
+                            critical_seconds = -1
+                        critical_error = True
+                        break
+                    if isinstance(res, ScanInterruptedException):
+                        # Transient 5xx/network retries exhausted → stop cleanly
+                        # and keep everything collected so far (never a silent skip).
+                        self.log(f"⚠️ SCAN INTERRUPTED (network/server): {err_msg}")
+                        interrupted_error = True
+                        break
+                    continue
+
+                if not res: continue
+
+                kept, excluded = res
+                # Dedup by uri across the WHOLE scan (fresh + resume). The same
+                # track can surface from two artists (a collab) or from re-running
+                # the interrupted chunk on resume; uri is an exact match, so this
+                # never drops a distinct song. A track with no uri (rare/malformed)
+                # is kept as-is — we never silently lose it.
+                for t in (kept or []):
+                    uri = t.get("uri")
+                    if not uri:
+                        results_buffer.append(t)
+                        continue
+                    if uri in seen:
+                        continue
+                    seen.add(uri)
+                    results_buffer.append(t)
+
+            # Hard rate-limit → SAVE the partial results to the checkpoint FIRST
+            # (this is the fix for the old data-deleting return), then stop.
+            # next_index=i so the interrupted chunk re-runs on resume.
+            if critical_error:
+                msg, blocked_until = self._format_rate_limit_msg(critical_seconds)
+                self._save_checkpoint(i, len(artists), results_buffer, settings,
+                                      auto_export_name, "blocked_resumable",
+                                      blocked_until=(blocked_until or 0))
+                self.state["is_running"] = False
+                self.state["status"] = "blocked_resumable"
+                self.state["error"] = msg
+                if blocked_until:
+                    self.state["blocked_until"] = blocked_until
+                self.state["results_count"] = len(results_buffer)
+                self._save_state()
+                break
+
+            # Network/server error that exhausted retries → same safety net,
+            # different status so the UI can word it differently.
+            if interrupted_error:
+                self._save_checkpoint(i, len(artists), results_buffer, settings,
+                                      auto_export_name, "interrupted_error")
+                self.state["is_running"] = False
+                self.state["status"] = "interrupted_error"
+                self.state["error"] = ("Scan interrupted by a network or server "
+                                       "error. Your partial results are saved — "
+                                       "you can resume.")
+                self.state["results_count"] = len(results_buffer)
+                self._save_state()
+                break
+
+            # Chunk done → checkpoint the growing buffer so a crash/kill after
+            # this point still keeps every track collected so far.
+            self.state["progress"] += len(chunk)
+            self.state["results_count"] = len(results_buffer)
+            self._save_checkpoint(i + chunk_size, len(artists), results_buffer,
+                                  settings, auto_export_name, "in_progress")
+            self._save_state()
+
+            # Small breathe
+            await asyncio.sleep(0.5)
+
+        # If we stopped early (rate-limit or network/server), the partial results
+        # are already saved to the checkpoint — skip finalize so we don't mark an
+        # interrupted scan "completed" or wipe the checkpoint.
+        if critical_error or interrupted_error:
+            self.log("Scan stopped early — partial results saved to checkpoint for resume.")
+            return
+
+        # Finalize
+        self.log(f"DEBUG: Loop finished. Saving {len(results_buffer)} results.")
+        storage.save_json(RESULTS_FILE, results_buffer)
+        self._save_to_history(results_buffer, settings)
+        # Completed successfully → drop the resumable checkpoint + frozen snapshot
+        # so the interrupted-detection never offers to "resume" a finished scan.
+        storage.delete_file(CHECKPOINT_FILE)
+        storage.delete_file(SNAPSHOT_FILE)
+
+        # Auto Export Logic
+        if auto_export_name and results_buffer:
+            self.log(f"Starting Auto-Export to playlist '{auto_export_name}'...")
+            try:
+                export_tracks = results_buffer
+
+                # Album exclusion: remove tracks from albums with 4+ tracks (same artist + album)
+                if settings.get('exclude_albums', False):
+                    from collections import defaultdict
+                    groups = defaultdict(list)
+                    for t in results_buffer:
+                        album_name  = (t.get('album') or {}).get('name', '')
+                        artist_name = ((t.get('artists') or [{}])[0]).get('name', '')
+                        groups[f"{artist_name}::{album_name}"].append(t)
+                    album_keys = {k for k, v in groups.items() if len(v) >= 4}
+                    export_tracks = [
+                        t for t in results_buffer
+                        if f"{((t.get('artists') or [{}])[0]).get('name','')}::{(t.get('album') or {}).get('name','')}" not in album_keys
+                    ]
+                    self.log(f"Album exclusion: removed {len(results_buffer) - len(export_tracks)} tracks from {len(album_keys)} albums")
+
+                if export_tracks:
+                    # auto_export_name already contains the date range (built in scan.py)
+                    user_id = sp.current_user()['id']
+                    pl = sp.user_playlist_create(user_id, auto_export_name, public=False)
+                    uris = [t['uri'] for t in export_tracks]
+                    for j in range(0, len(uris), 100):
+                        sp.playlist_add_items(pl['id'], uris[j:j+100])
+                    self.log(f"SUCCESS: Auto-exported {len(export_tracks)} tracks to '{auto_export_name}'")
+                else:
+                    self.log("No tracks to export after album exclusion.")
+            except Exception as exp:
+                self.log(f"ERROR: Auto-export failed: {exp}")
+
+        self.state["results_count"] = len(results_buffer)
+        self.state["status"] = "completed"
+
+    async def resume_scan(self, sp, app_sp=None):
+        """Resume a blocked/interrupted scan from its checkpoint, on the FROZEN
+        artist snapshot (option א'). Requires BOTH files — if either is missing
+        there is nothing to resume. uri-dedup means the re-run of the interrupted
+        chunk contributes no duplicates."""
+        work_sp = app_sp if app_sp else sp
+        reset_pacing()   # clear the _CRITICAL_ABORT latch (etc.) before resuming
+
+        cp = storage.load_json(CHECKPOINT_FILE)
+        artists = storage.load_json(SNAPSHOT_FILE)
+        if not cp or not artists:
+            self.log("Resume requested but no checkpoint/snapshot found — nothing to resume.")
+            return
+
+        results_buffer = cp.get("results") or []
+        seen = {t["uri"] for t in results_buffer if t.get("uri")}
+        settings = cp.get("settings") or {}
+        auto_export_name = cp.get("auto_export_name")
+        start_index = cp.get("next_index") or 0
+        total = cp.get("total") or len(artists)
+
+        self.state["is_running"] = True
+        self.state["status"] = "scanning"
+        self.state["progress"] = start_index
+        self.state["total"] = total
+        self.state["results_count"] = len(results_buffer)
+        self.state["current_artist"] = f"Resuming from {start_index}/{total}"
+        self.state["logs"] = []
+        self.state["partial_scan"] = bool(settings.get('selected_artist_ids'))
+        self.state.pop("error", None)
+        self.state.pop("rate_limit_until", None)
+        self.state.pop("blocked_until", None)
+        self._save_state()
+        self.log(f"Resuming scan from artist {start_index}/{total} with {len(results_buffer)} tracks kept.")
+
+        try:
+            await self._scan_and_finalize(
+                work_sp, sp, artists, settings, auto_export_name,
+                results_buffer=results_buffer, seen=seen, start_index=start_index
+            )
+        except ScanInterruptedException as e:
+            self.state["status"] = "interrupted_error"
+            self.state["error"] = ("Scan interrupted by a network or server error. "
+                                   "Please try again.")
+            self.log(f"SCAN INTERRUPTED (resume): {e}")
+        except Exception as e:
+            err_msg = str(e)
+            self.state["status"] = "error"
+            if "CRITICAL_RATE_LIMIT" in err_msg:
+                try:
+                    seconds = int(err_msg.split("CRITICAL_RATE_LIMIT:")[1].split()[0])
+                except Exception:
+                    seconds = -1
+                msg, blocked_until = self._format_rate_limit_msg(seconds)
+                self.state["error"] = msg
+                if blocked_until:
+                    self.state["blocked_until"] = blocked_until
+            else:
+                self.state["error"] = err_msg
+            self.log(f"CRITICAL RESUME ERROR: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self.log("DEBUG: resume_scan cleanup (finally block).")
             self.state["is_running"] = False
             self._save_state()
 
@@ -457,7 +640,59 @@ class AdvancedEngine:
         return current_state
     
     def get_results(self):
+        # When a scan is paused (blocked/interrupted), RESULTS_FILE hasn't been
+        # written yet — surface the partial results straight from the checkpoint so
+        # the user can view / export what was collected before the stop.
+        cp = storage.load_json(CHECKPOINT_FILE)
+        if cp and cp.get("status") in ("blocked_resumable", "interrupted_error"):
+            return cp.get("results") or []
         return storage.load_json(RESULTS_FILE, [])
+
+    def get_checkpoint_info(self):
+        """Summary of a resumable checkpoint for the frontend banner. Also flags a
+        'silently died' scan: a checkpoint still marked in_progress whose heartbeat
+        is stale (the instance running it went away, e.g. a closed tab before the
+        Job model). Returns {"exists": False} when there is nothing to resume."""
+        cp = storage.load_json(CHECKPOINT_FILE)
+        if not cp:
+            return {"exists": False}
+
+        status = cp.get("status")
+        heartbeat = cp.get("heartbeat", 0)
+        stale = bool(heartbeat) and (time.time() - heartbeat > 120)
+
+        # Resumable if the scan explicitly stopped (blocked/interrupted) OR it
+        # claims in_progress but its heartbeat died. A live in_progress scan is
+        # NOT offered for resume (it's still running).
+        resumable = status in ("blocked_resumable", "interrupted_error") or \
+                    (status == "in_progress" and stale)
+        # resume_scan needs the snapshot too; without it there's nothing to resume.
+        if resumable and not storage.exists(SNAPSHOT_FILE):
+            resumable = False
+
+        if status == "blocked_resumable":
+            reason = "rate_limited"
+        elif status == "interrupted_error":
+            reason = "network_error"
+        elif status == "in_progress" and stale:
+            reason = "interrupted"
+        else:
+            reason = status  # live in_progress (not resumable)
+
+        blocked_until = cp.get("blocked_until") or 0
+        info = {
+            "exists": True,
+            "resumable": resumable,
+            "status": status,
+            "reason": reason,
+            "next_index": cp.get("next_index") or 0,
+            "total": cp.get("total") or 0,
+            "results_count": len(cp.get("results") or []),
+            "blocked_until": blocked_until,
+        }
+        if blocked_until:
+            info["blocked_remaining"] = max(0, int(blocked_until - time.time()))
+        return info
 
     # ── History ────────────────────────────────────────────────────────────
     def _save_to_history(self, tracks: list, settings: dict):

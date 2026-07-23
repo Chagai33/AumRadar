@@ -49,6 +49,18 @@ interface ScanStatus {
     partial_scan?: boolean;
 }
 
+interface CheckpointInfo {
+    exists: boolean;
+    resumable?: boolean;
+    status?: string;
+    reason?: string;       // rate_limited | network_error | interrupted
+    next_index?: number;
+    total?: number;
+    results_count?: number;
+    blocked_until?: number;
+    blocked_remaining?: number;
+}
+
 export const Dashboard: React.FC = () => {
     const { user, logout } = useAuth();
 
@@ -56,6 +68,7 @@ export const Dashboard: React.FC = () => {
     const [scanStatus, setScanStatus] = useState<ScanStatus>({
         is_running: false, status: 'idle', progress: 0, total: 0, current_artist: '', results_count: 0
     });
+    const [checkpoint, setCheckpoint] = useState<CheckpointInfo>({ exists: false });
 
     const [results, setResults] = useState<Track[]>([]);
     const [dateOption, setDateOption] = useState<'last7' | 'last30' | 'custom' | 'sat_to_fri' | 'sun_to_sat'>('sun_to_sat');
@@ -207,6 +220,12 @@ export const Dashboard: React.FC = () => {
                     setResults(res.data);
                     setOriginalResults(res.data);
                 }
+                // A resumable checkpoint may exist from a scan that was blocked or
+                // interrupted (or died with the tab closed) — surface it for the banner.
+                try {
+                    const cp = await axios.get('/api/checkpoint');
+                    setCheckpoint(cp.data);
+                } catch { /* ignore */ }
             } catch (e) {
                 console.error("Status check failed", e);
             }
@@ -239,9 +258,26 @@ export const Dashboard: React.FC = () => {
                         setOriginalResults(res.data);
                     }
                     if (data.status === 'completed') {
+                        setCheckpoint({ exists: false });
                         // Refresh history list so new scan appears
                         axios.get('/api/history').then(r => setScanHistory(r.data)).catch(() => {});
                     }
+                }
+
+                // Scan stopped in a resumable state (rate-limit / network) — pull the
+                // partial results + checkpoint info so the resume banner can appear.
+                if (data.status === 'blocked_resumable' || data.status === 'interrupted_error') {
+                    if (!viewingHistory) {
+                        try {
+                            const res = await axios.get('/api/results');
+                            setResults(res.data);
+                            setOriginalResults(res.data);
+                        } catch { /* ignore */ }
+                    }
+                    try {
+                        const cp = await axios.get('/api/checkpoint');
+                        setCheckpoint(cp.data);
+                    } catch { /* ignore */ }
                 }
             } catch (e) {
                 console.error("Status poll failed", e);
@@ -385,6 +421,26 @@ export const Dashboard: React.FC = () => {
     const handleStopScan = async () => {
         await axios.post('/api/stop');
     };
+
+    const formatDuration = (sec: number) => {
+        if (sec >= 3600) { const h = Math.floor(sec / 3600); const m = Math.round((sec % 3600) / 60); return m ? `${h}h ${m}m` : `${h}h`; }
+        if (sec >= 60) return `${Math.round(sec / 60)}m`;
+        return `${sec}s`;
+    };
+
+    const handleResume = async () => {
+        try {
+            await axios.post('/api/resume');
+            setCheckpoint({ exists: false });
+            setScanStatus(prev => ({ ...prev, is_running: true, status: 'scanning', error: undefined }));
+        } catch (e: any) {
+            alert('Failed to resume scan: ' + (e.response?.data?.detail || e.message));
+        }
+    };
+
+    // "New scan" from the resume banner just hides it — starting a fresh scan via
+    // the normal controls wipes the server checkpoint (scan_process clears it).
+    const dismissResumeBanner = () => setCheckpoint({ exists: false });
 
     const handleRestoreResults = () => {
         if (confirm("Restore original scan results? This will undo album organization.")) {
@@ -623,6 +679,46 @@ export const Dashboard: React.FC = () => {
                     )}
                 </AnimatePresence>
 
+                {/* Resumable Scan Banner (blocked / interrupted) — no auto-resume */}
+                {checkpoint.exists && checkpoint.resumable && !scanStatus.is_running && scanStatus.status !== 'completed' && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="bg-amber-900/15 border border-amber-500/40 rounded-xl p-5 mb-8 flex flex-col md:flex-row items-start gap-4 shadow-lg"
+                    >
+                        <div className="bg-amber-500/20 p-2 rounded-full shrink-0">
+                            <RefreshCw className="w-5 h-5 text-amber-400" />
+                        </div>
+                        <div className="flex-1">
+                            <h3 className="text-lg font-bold text-amber-300">Scan paused — you can resume</h3>
+                            <p className="text-gray-300 text-sm mt-1">
+                                Stopped at <span className="font-bold text-white">{checkpoint.next_index}/{checkpoint.total}</span> artists
+                                {' · '}<span className="font-bold text-[#1DB954]">{checkpoint.results_count} tracks saved</span>
+                                {checkpoint.reason === 'rate_limited' && (
+                                    <> · Spotify rate limit{checkpoint.blocked_remaining ? <> — clears in ~{formatDuration(checkpoint.blocked_remaining)}</> : null}</>
+                                )}
+                                {checkpoint.reason === 'network_error' && <> · network / server error</>}
+                                {checkpoint.reason === 'interrupted' && <> · interrupted (scan stopped unexpectedly)</>}
+                            </p>
+                            <p className="text-gray-500 text-xs mt-1">Resume continues from the exact point on the same artist list — no duplicates, nothing skipped.</p>
+                        </div>
+                        <div className="flex gap-2 shrink-0">
+                            <button
+                                onClick={handleResume}
+                                className="bg-[#1DB954] hover:bg-[#1ed760] text-black font-semibold px-4 py-2 rounded-lg text-sm transition-colors"
+                            >
+                                Resume
+                            </button>
+                            <button
+                                onClick={dismissResumeBanner}
+                                className="bg-[#282828] hover:bg-[#333] text-white px-4 py-2 rounded-lg text-sm border border-gray-700 transition-colors"
+                            >
+                                New scan
+                            </button>
+                        </div>
+                    </motion.div>
+                )}
+
                 {/* Completion Banner */}
                 {scanStatus.status === 'completed' && !scanStatus.is_running && (
                     <motion.div
@@ -653,8 +749,11 @@ export const Dashboard: React.FC = () => {
                     </motion.div>
                 )}
 
-                {/* Error Banner */}
-                {scanStatus.status === 'error' && (
+                {/* Error Banner — also covers a blocked/interrupted stop with no
+                    resumable checkpoint (e.g. the artist-list fetch failed pre-loop). */}
+                {(scanStatus.status === 'error' ||
+                  ((scanStatus.status === 'interrupted_error' || scanStatus.status === 'blocked_resumable') &&
+                   !(checkpoint.exists && checkpoint.resumable))) && !scanStatus.is_running && (
                     <motion.div
                         initial={{ opacity: 0, y: -20 }}
                         animate={{ opacity: 1, y: 0 }}

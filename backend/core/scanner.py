@@ -51,6 +51,27 @@ class AdvancedEngine:
         self.state["heartbeat"] = time.time()
         storage.save_json(SCAN_STATE_FILE, self.state)
 
+    async def _heartbeat_loop(self, interval=20):
+        """Keep SCAN_STATE_FILE's heartbeat fresh on a wall-clock cadence, NOT just
+        once per chunk. Without this a long rate-limit block (a chunk can exceed the
+        120s liveness window) would let the liveness checks — get_status staleness,
+        the /start 409 gate, and the Job's _another_instance_alive lock — wrongly
+        declare a still-running scan dead and allow a duplicate/second scan. The
+        chunk loop awaits inside asyncio.gather, so this task is scheduled on time."""
+        try:
+            while self.state.get("is_running"):
+                self.state["heartbeat"] = time.time()
+                storage.save_json(SCAN_STATE_FILE, self.state)
+                await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass
+
+    def _cancel_heartbeat(self):
+        task = getattr(self, "_hb_task", None)
+        if task and not task.done():
+            task.cancel()
+        self._hb_task = None
+
     def _save_checkpoint(self, next_index, total, results_buffer, settings,
                          auto_export_name, status, blocked_until=0):
         """Persist the DYNAMIC scan progress after each chunk (and on every stop
@@ -310,6 +331,7 @@ class AdvancedEngine:
             import traceback
             traceback.print_exc()
         finally:
+            self._cancel_heartbeat()
             self.log("DEBUG: scan_process cleanup (finally block).")
             self.state["is_running"] = False
             self._save_state()
@@ -322,6 +344,9 @@ class AdvancedEngine:
         RESULTS_FILE + history, clears the checkpoint/snapshot, and runs the
         auto-export. ONE code path, so fresh and resume can never drift apart —
         every Phase 1 safety-net fix applies to resume automatically."""
+        # Keep the heartbeat fresh on a timer (not only per-chunk) so a long
+        # rate-limit block can't make the liveness checks think the scan died.
+        self._hb_task = asyncio.create_task(self._heartbeat_loop())
         start_date_str = settings.get('start_date') or ''
         end_date_str = settings.get('end_date') or ''
         if not start_date_str or not end_date_str:
@@ -577,6 +602,7 @@ class AdvancedEngine:
             import traceback
             traceback.print_exc()
         finally:
+            self._cancel_heartbeat()
             self.log("DEBUG: resume_scan cleanup (finally block).")
             self.state["is_running"] = False
             self._save_state()
@@ -658,14 +684,17 @@ class AdvancedEngine:
             return {"exists": False}
 
         status = cp.get("status")
-        heartbeat = cp.get("heartbeat", 0)
-        stale = bool(heartbeat) and (time.time() - heartbeat > 120)
+        # Liveness comes from SCAN_STATE_FILE (kept fresh every ~20s by the
+        # heartbeat loop), NOT the checkpoint's own per-chunk heartbeat — otherwise
+        # a long chunk would make a live scan look dead and offer a bogus resume.
+        st = storage.load_json(SCAN_STATE_FILE) or {}
+        st_hb = st.get("heartbeat", 0)
+        live = bool(st.get("is_running")) and bool(st_hb) and (time.time() - st_hb < 120)
+        stale = (status == "in_progress") and not live
 
         # Resumable if the scan explicitly stopped (blocked/interrupted) OR it
-        # claims in_progress but its heartbeat died. A live in_progress scan is
-        # NOT offered for resume (it's still running).
-        resumable = status in ("blocked_resumable", "interrupted_error") or \
-                    (status == "in_progress" and stale)
+        # claims in_progress but no live scan is actually running it.
+        resumable = status in ("blocked_resumable", "interrupted_error") or stale
         # resume_scan needs the snapshot too; without it there's nothing to resume.
         if resumable and not storage.exists(SNAPSHOT_FILE):
             resumable = False

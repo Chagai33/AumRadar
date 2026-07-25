@@ -5,4 +5,5 @@ python-dotenv
 httpx
 itsdangerous
 google-cloud-storage
+google-cloud-run
 gunicorn

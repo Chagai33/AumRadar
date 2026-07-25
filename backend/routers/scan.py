@@ -4,6 +4,7 @@ from typing import Optional, List
 import datetime
 from .auth import get_spotify_client, get_app_client
 from ..core.scanner import scanner
+from ..core.job_trigger import trigger_scan_job
 
 router = APIRouter()
 
@@ -82,15 +83,15 @@ async def run_automation_headless(background_tasks: BackgroundTasks):
         end   = settings_dict.get('end_date', '')
         playlist_name = f"Weekly Radar {start} – {end}" if start and end else "Weekly Radar"
         
-        background_tasks.add_task(
-            scanner.scan_process, 
-            headless_sp, 
-            settings_dict, 
-            app_sp, 
-            auto_export_name=playlist_name
+        result = trigger_scan_job(
+            "scheduled",
+            sp=headless_sp,
+            app_sp=app_sp,
+            settings=settings_dict,
+            auto_export_name=playlist_name,
+            background_tasks=background_tasks,
         )
-        
-        return {"status": "triggered"}
+        return {"status": "triggered", "trigger": result}
     except Exception as e:
         return {"status": "error", "message": str(e)}
     
@@ -112,18 +113,25 @@ def get_artists():
 def get_cache_info():
     return scanner.get_artists_cache_info()
 
+def _reject_if_running():
+    # get_status() already downgrades a stale (>120s heartbeat) scan to
+    # not-running, so a True here means a genuinely live scan → refuse a second.
+    if scanner.get_status().get("is_running"):
+        raise HTTPException(status_code=409, detail="A scan is already running")
+
+
 @router.post("/start")
 async def start_scan(settings: ScanSettings, background_tasks: BackgroundTasks, sp=Depends(get_spotify_client)):
-    engine_settings = settings.dict()
-    
-    if scanner.get_status()["is_running"]:
-        return {"status": "error", "message": "Scan already running"}
-
-    # Initialize App Client for high-performance scanning
+    _reject_if_running()
+    # Resolve dynamic dates NOW so the Job — and the checkpoint it writes — see
+    # concrete dates (a resume must run the exact same range).
+    engine_settings = resolve_dynamic_dates(settings.dict())
     app_sp = get_app_client()
-
-    background_tasks.add_task(scanner.scan_process, sp, engine_settings, app_sp)
-    return {"status": "started", "settings": engine_settings}
+    result = trigger_scan_job("manual", sp=sp, app_sp=app_sp,
+                              settings=engine_settings, background_tasks=background_tasks)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=503, detail=result.get("message", "could not start scan"))
+    return {"status": "started", "settings": engine_settings, "trigger": result}
 
 @router.get("/status")
 def get_scan_status():
@@ -141,12 +149,13 @@ def get_checkpoint():
 @router.post("/resume")
 async def resume_scan(background_tasks: BackgroundTasks, sp=Depends(get_spotify_client)):
     # Continue a blocked/interrupted scan from its checkpoint on the frozen artist
-    # snapshot. Stays a BackgroundTask for now; Phase 4 will trigger a Cloud Run Job.
-    if scanner.get_status()["is_running"]:
-        return {"status": "error", "message": "Scan already running"}
+    # snapshot — as a Cloud Run Job in prod, or an in-process task in local dev.
+    _reject_if_running()
     app_sp = get_app_client()
-    background_tasks.add_task(scanner.resume_scan, sp, app_sp)
-    return {"status": "resumed"}
+    result = trigger_scan_job("resume", sp=sp, app_sp=app_sp, background_tasks=background_tasks)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=503, detail=result.get("message", "could not resume scan"))
+    return {"status": "resumed", "trigger": result}
 
 @router.post("/stop")
 def stop_scan():

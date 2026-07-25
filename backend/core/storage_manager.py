@@ -11,6 +11,12 @@ try:
 except ImportError:
     GCS_AVAILABLE = False
 
+# Hard timeout (seconds) for every GCS network call. Kept short so a hung request
+# fails cleanly inside Cloud Run's ~10s SIGTERM→SIGKILL grace window instead of
+# blocking the whole scan. GCS writes are atomic, so a timed-out write just leaves
+# the previous version intact — no corruption.
+GCS_TIMEOUT = 6
+
 class StorageManager:
     def __init__(self):
         self.bucket_name = os.getenv("BUCKET_NAME") # We will set this env var in Cloud Run
@@ -43,10 +49,13 @@ class StorageManager:
                 blob = self.bucket.blob(filename)
                 blob.upload_from_string(
                     json.dumps(data, default=str),
-                    content_type='application/json'
+                    content_type='application/json',
+                    timeout=GCS_TIMEOUT
                 )
+                return True
             except Exception as e:
                 print(f"Error saving to GCS ({filename}): {e}")
+                return False
         else:
             try:
                 path = self._get_local_path(filename)
@@ -54,16 +63,18 @@ class StorageManager:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, 'w') as f:
                     json.dump(data, f, default=str)
+                return True
             except Exception as e:
                 print(f"Error saving local file ({filename}): {e}")
+                return False
 
     def load_json(self, filename: str, default: Any = None) -> Any:
         if self.use_cloud:
             try:
                 blob = self.bucket.blob(filename)
-                if not blob.exists():
+                if not blob.exists(timeout=GCS_TIMEOUT):
                     return default
-                data = json.loads(blob.download_as_string())
+                data = json.loads(blob.download_as_string(timeout=GCS_TIMEOUT))
                 return data
             except Exception as e:
                 # print(f"Error loading from GCS ({filename}): {e}")
@@ -82,7 +93,7 @@ class StorageManager:
         if self.use_cloud:
             try:
                 blob = self.bucket.blob(filename)
-                return blob.exists()
+                return blob.exists(timeout=GCS_TIMEOUT)
             except:
                 return False
         else:
@@ -92,7 +103,7 @@ class StorageManager:
         """Returns dict with 'size', 'last_updated' (datetime iso format)"""
         if self.use_cloud:
             try:
-                blob = self.bucket.get_blob(filename)
+                blob = self.bucket.get_blob(filename, timeout=GCS_TIMEOUT)
                 if not blob:
                     return {}
                 return {
@@ -117,7 +128,7 @@ class StorageManager:
         if self.use_cloud:
             try:
                 blob = self.bucket.blob(filename)
-                blob.delete()
+                blob.delete(timeout=GCS_TIMEOUT)
             except Exception as e:
                 print(f"Error deleting from GCS ({filename}): {e}")
         else:

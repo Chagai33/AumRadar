@@ -7,9 +7,23 @@ from .storage_manager import storage
 from ..config import settings as app_settings
 from spotipy.oauth2 import SpotifyOAuth
 from spotipy import Spotify
+from spotipy.cache_handler import CacheHandler
 
 AUTOMATION_FILE = "cache/automation_config.json"
 TOKENS_FILE = "cache/automation_tokens.json"
+
+
+class StorageCacheHandler(CacheHandler):
+    """spotipy token cache backed by our StorageManager (GCS in prod, local in
+    dev). Lets SpotifyOAuth auto-refresh the user token on expiry AND persist the
+    refreshed token — so a headless Job that runs >60 min never dies on an expired
+    token. The new token is written back to TOKENS_FILE for the next run too."""
+
+    def get_cached_token(self):
+        return storage.load_json(TOKENS_FILE)
+
+    def save_token_to_cache(self, token_info):
+        storage.save_json(TOKENS_FILE, token_info)
 
 class AutomationManager:
     def __init__(self):
@@ -39,27 +53,30 @@ class AutomationManager:
 
     def get_headless_client(self):
         """
-        Constructs a Spotify Client using the saved Refresh Token.
+        Constructs a Spotify client whose USER token auto-refreshes on expiry.
+
+        Uses auth_manager + a storage-backed cache handler instead of a static
+        access token, so a long Job (>60 min) doesn't 401 mid-run: spotipy calls
+        get_access_token() before each request, refreshes when the token is expired,
+        and writes the new token back via StorageCacheHandler.
+
+        NOTE: the scope MUST match the one the login granted (app_settings.SCOPE),
+        or validate_token() treats the cached token as invalid and falls into the
+        interactive auth flow — which cannot work headless.
         """
-        token_info = self.load_tokens()
-        if not token_info:
+        if not self.load_tokens():
             raise Exception("No automation tokens found. Please run a manual scan first to authorize.")
 
-        # Create OAuth object
         sp_oauth = SpotifyOAuth(
             client_id=app_settings.CLIENT_ID,
             client_secret=app_settings.CLIENT_SECRET,
             redirect_uri=app_settings.REDIRECT_URI,
-            scope="user-library-read user-follow-read playlist-modify-private playlist-modify-public user-top-read"
+            scope=app_settings.SCOPE,
+            cache_handler=StorageCacheHandler(),
+            open_browser=False,       # never pop a browser in a headless Job
+            requests_timeout=20,      # bound the token-refresh POST (else defaults to None = unbounded)
         )
-
-        # Refresh token logic
-        if sp_oauth.is_token_expired(token_info):
-            new_token = sp_oauth.refresh_access_token(token_info['refresh_token'])
-            self.save_tokens(new_token)
-            token_info = new_token
-
-        return Spotify(auth=token_info['access_token'])
+        return Spotify(auth_manager=sp_oauth)
 
     def should_run_now(self):
         # Logic to check if current time matches schedule (Not strictly needed if using Cron)

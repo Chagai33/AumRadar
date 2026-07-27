@@ -706,14 +706,20 @@ export const Dashboard: React.FC = () => {
                         </div>
                         <div className="flex-1">
                             <h3 className="text-lg font-bold text-amber-300">Scan paused — you can resume</h3>
+                            {checkpoint.reason === 'rate_limited' && (
+                                <p className="text-amber-100/80 text-sm mt-1">
+                                    Spotify rate limit reached{checkpoint.blocked_remaining ? <> — try again in about {formatDuration(checkpoint.blocked_remaining)}</> : null}.
+                                </p>
+                            )}
+                            {checkpoint.reason === 'network_error' && (
+                                <p className="text-amber-100/80 text-sm mt-1">Stopped by a network / server error.</p>
+                            )}
+                            {checkpoint.reason === 'interrupted' && (
+                                <p className="text-amber-100/80 text-sm mt-1">The scan stopped unexpectedly.</p>
+                            )}
                             <p className="text-gray-300 text-sm mt-1">
                                 Stopped at <span className="font-bold text-white">{checkpoint.next_index}/{checkpoint.total}</span> artists
                                 {' · '}<span className="font-bold text-[#1DB954]">{checkpoint.results_count} tracks saved</span>
-                                {checkpoint.reason === 'rate_limited' && (
-                                    <> · Spotify rate limit{checkpoint.blocked_remaining ? <> — clears in ~{formatDuration(checkpoint.blocked_remaining)}</> : null}</>
-                                )}
-                                {checkpoint.reason === 'network_error' && <> · network / server error</>}
-                                {checkpoint.reason === 'interrupted' && <> · interrupted (scan stopped unexpectedly)</>}
                             </p>
                             <p className="text-gray-500 text-xs mt-1">Resume continues from the exact point on the same artist list — no duplicates, nothing skipped.</p>
                             <label className="flex items-center gap-2 text-xs text-gray-300 mt-2 cursor-pointer select-none">

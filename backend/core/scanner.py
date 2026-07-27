@@ -23,6 +23,7 @@ MAX_HISTORY = 50
 # ~3MB artist list on every chunk — only the ~2MB-max results ride in the checkpoint.
 SNAPSHOT_FILE = f"{CACHE_DIR}/scan_artists_snapshot.json"
 CHECKPOINT_FILE = f"{CACHE_DIR}/scan_checkpoint.json"
+AUTO_RESUME_FILE = f"{CACHE_DIR}/auto_resume.json"
 
 class AdvancedEngine:
     def __init__(self):
@@ -673,6 +674,15 @@ class AdvancedEngine:
         if cp and cp.get("status") in ("blocked_resumable", "interrupted_error"):
             return cp.get("results") or []
         return storage.load_json(RESULTS_FILE, [])
+
+    def get_auto_resume(self):
+        """User toggle: should a blocked/interrupted scan resume automatically (via
+        the resume_due poller) once the rate-limit block clears? Default ON."""
+        return storage.load_json(AUTO_RESUME_FILE, {"enabled": True})
+
+    def set_auto_resume(self, enabled):
+        storage.save_json(AUTO_RESUME_FILE, {"enabled": bool(enabled)})
+        return {"enabled": bool(enabled)}
 
     def get_checkpoint_info(self):
         """Summary of a resumable checkpoint for the frontend banner. Also flags a

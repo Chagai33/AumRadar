@@ -69,6 +69,7 @@ export const Dashboard: React.FC = () => {
         is_running: false, status: 'idle', progress: 0, total: 0, current_artist: '', results_count: 0
     });
     const [checkpoint, setCheckpoint] = useState<CheckpointInfo>({ exists: false });
+    const [autoResume, setAutoResume] = useState(true);
 
     const [results, setResults] = useState<Track[]>([]);
     const [dateOption, setDateOption] = useState<'last7' | 'last30' | 'custom' | 'sat_to_fri' | 'sun_to_sat'>('sun_to_sat');
@@ -225,6 +226,10 @@ export const Dashboard: React.FC = () => {
                 try {
                     const cp = await axios.get('/api/checkpoint');
                     setCheckpoint(cp.data);
+                } catch { /* ignore */ }
+                try {
+                    const ar = await axios.get('/api/auto-resume');
+                    setAutoResume(ar.data?.enabled !== false);
                 } catch { /* ignore */ }
             } catch (e) {
                 console.error("Status check failed", e);
@@ -441,6 +446,16 @@ export const Dashboard: React.FC = () => {
     // "New scan" from the resume banner just hides it — starting a fresh scan via
     // the normal controls wipes the server checkpoint (scan_process clears it).
     const dismissResumeBanner = () => setCheckpoint({ exists: false });
+
+    // Toggle whether a blocked scan auto-resumes when the rate limit clears.
+    const toggleAutoResume = async (enabled: boolean) => {
+        setAutoResume(enabled); // optimistic
+        try {
+            await axios.post('/api/auto-resume', { enabled });
+        } catch {
+            setAutoResume(!enabled); // revert on failure
+        }
+    };
 
     const handleRestoreResults = () => {
         if (confirm("Restore original scan results? This will undo album organization.")) {
@@ -701,6 +716,15 @@ export const Dashboard: React.FC = () => {
                                 {checkpoint.reason === 'interrupted' && <> · interrupted (scan stopped unexpectedly)</>}
                             </p>
                             <p className="text-gray-500 text-xs mt-1">Resume continues from the exact point on the same artist list — no duplicates, nothing skipped.</p>
+                            <label className="flex items-center gap-2 text-xs text-gray-300 mt-2 cursor-pointer select-none">
+                                <input
+                                    type="checkbox"
+                                    checked={autoResume}
+                                    onChange={(e) => toggleAutoResume(e.target.checked)}
+                                    className="accent-[#1DB954] w-4 h-4"
+                                />
+                                Auto-resume automatically when the rate limit clears
+                            </label>
                         </div>
                         <div className="flex gap-2 shrink-0">
                             <button

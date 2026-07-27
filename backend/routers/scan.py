@@ -146,6 +146,18 @@ def get_checkpoint():
     # Resumable-scan summary for the frontend banner (exists / resumable / counts).
     return scanner.get_checkpoint_info()
 
+class AutoResumeToggle(BaseModel):
+    enabled: bool
+
+@router.get("/auto-resume")
+def get_auto_resume():
+    # Whether a blocked scan auto-resumes when the rate-limit clears (user toggle).
+    return scanner.get_auto_resume()
+
+@router.post("/auto-resume")
+def set_auto_resume(body: AutoResumeToggle):
+    return scanner.set_auto_resume(body.enabled)
+
 @router.post("/resume")
 async def resume_scan(background_tasks: BackgroundTasks, sp=Depends(get_spotify_client)):
     # Continue a blocked/interrupted scan from its checkpoint on the frozen artist

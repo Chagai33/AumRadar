@@ -20,7 +20,7 @@ import time
 import asyncio
 
 from .core.storage_manager import storage
-from .core.scanner import scanner, SCAN_STATE_FILE
+from .core.scanner import scanner, SCAN_STATE_FILE, CHECKPOINT_FILE
 from .core.automation import automation_manager
 from .routers.auth import get_app_client
 from .routers.scan import resolve_dynamic_dates
@@ -53,6 +53,24 @@ async def _run():
         _log("another scan is already running (fresh heartbeat) — exiting cleanly.")
         return 0
 
+    # Auto-resume poller: a periodic scheduler fires SCAN_MODE=resume_due. Skip
+    # cheaply (BEFORE building clients) unless there's a checkpoint whose rate-limit
+    # block has already cleared — otherwise we'd just re-hit the block and waste
+    # requests that could extend it.
+    if mode == "resume_due":
+        if not scanner.get_auto_resume().get("enabled", True):
+            _log("auto-resume is disabled by the user — skipping.")
+            return 0
+        cp = storage.load_json(CHECKPOINT_FILE)
+        if not cp:
+            _log("auto-resume: no checkpoint — nothing to do.")
+            return 0
+        remaining = (cp.get("blocked_until") or 0) - time.time()
+        if remaining > 0:
+            _log(f"auto-resume: rate-limit block clears in ~{int(remaining / 60)} min — skipping this poll.")
+            return 0
+        _log("auto-resume: block cleared — resuming.")
+
     # Both clients are headless: the app client (auto-refreshing client-credentials)
     # for the heavy album/track calls, and the user client (auto-refreshing via the
     # storage-backed cache handler) for followed-artists + playlist export.
@@ -63,7 +81,7 @@ async def _run():
         _log(f"cannot build Spotify clients (no saved token? run a manual scan to authorize): {e}")
         return 1
 
-    if mode == "resume":
+    if mode in ("resume", "resume_due"):
         _log("resuming from checkpoint.")
         await scanner.resume_scan(sp, app_sp)   # no-ops safely if nothing to resume
         return 0

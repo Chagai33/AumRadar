@@ -7,3 +7,8 @@ venv/
 
 # Editor settings
 .vscode/
+
+# Artist Health Engine — personal playlist exports (NOT for the public repo; re-exportable from Skiley)
+artist-health/data/playlists/*.json
+artist-health/data/playlists/*.csv
+artist-health/data/playlists/*.docx

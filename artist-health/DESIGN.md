@@ -182,6 +182,70 @@
 
 ---
 
+## סכימת ה-DB (SQLite) — נסקרה שדה-שדה ואושרה 2026-08-04
+
+> עדיין תכנון — לא נבנתה. `⚙️` = ניתן לכוונון ב-UI.
+
+### ליבה (5 טבלאות)
+
+**`artists`** — אמן · מפתח `artist_uri`
+`artist_uri` · `name` · `url` · `is_israeli` · `first_seen_week` · `removed_at`
+
+**`playlists`** — פלייליסט · מפתח `playlist_uri`
+`playlist_uri` · `name` · `type` · `week_number` · `included` · `importance_weight` ⚙️
+- `type` מזוהה אוטומטית **רק** ל-`weekly` (`彡…Week#NNN`) ו-`outofplaylist` (`#NNN Outofplaylist`).
+  כל השאר = `other`. המערכת **לא** מבדילה "אירוע" מ"זבל" — וגם לא צריכה.
+- `week_number` קיים רק ב-weekly+outofplaylist. `included`: weekly+outofplaylist אוטומטית;
+  `other` נכנס **רק אם המשתמש סימן ידנית**. ל-`other` אין גיל → מקבל `importance_weight` ידני.
+
+**`tracks`** — שיר · מפתח `track_uri`
+`track_uri` · `isrc` · `name` · `album_type` · `album_name` · `release_date` · `release_week` · `primary_artist_uri`
+
+**`track_artists`** — מי שר בכל שיר (רבים-לרבים)
+`track_uri` · `artist_uri` · `role` (primary/secondary) · `position`
+- כאן יושבים גם האמנים המשניים עם ה-ID (אומת שהסריקה נותנת).
+
+**`playlist_tracks`** — מה בכל פלייליסט (רבים-לרבים)
+`playlist_uri` · `track_uri` · `position`
+- `position` = הסדר בפלייליסט → מאפשר למפות את הז'אנר-לפי-סדר מהדוק. `addedAt` לא בשימוש לתזמון.
+
+### תומכות
+
+**`genres`** — 3 שכבות במקביל, אף אחת לא דורסת
+`entity` (אמן/שיר) · `source` (`mine`/`spotify`/`manual`) · `genre`
+- spotify = רמת אמן · mine = רמת שיר (מהדוק, לפי position) · manual = עריכה ידנית.
+
+**`artist_manual`** — בקרה ידנית, **נפרדת מהציון המחושב** (לצידו, לא דורסת)
+`artist_uri` · `preferred` · `score_floor` · `pinned_until` · `blacklisted` · `notes`
+**`artist_tags`** — `artist_uri` · `tag` (חופשי)
+
+**`release_events`** — הלוג הגולמי ("למה"), קדימה בלבד
+`artist_uri` · `track_uri` · `isrc` · `role` · `release_week` · `outcome` (hit/shadow/miss) · `outcome_week` · `anomaly_flag`
+
+**`artist_scores`** — הציונים לאורך זמן
+`artist_uri` · `week` · `general_rank` · `release_quality` · `weights_version`
+
+**`weight_configs`** — כל ה-⚙️ + היסטוריה
+`version_id` · `created_at` · `label` · `is_active` · ערכים גמישים (שם-כפתור→ערך)
+- כולל 4 כפתורי קרדיט: ראשי-הצלחה / ראשי-החטאה / משני-הצלחה / משני-החטאה.
+  **משני מקבל השפעה מופחתת גם על החטאה (לא אפס); עוזר יותר משמזיק. הכל ניתן לשינוי.**
+
+**CRM/אינסטגרם** — דאטהסט עצמאי (handles לא יציבים → מפתח פנימי, לא ה-handle):
+- **`instagram_accounts`** — `ig_id` (מפתח) · `handle` · `full_name` · `notes` · `last_seen_state`
+- **`ig_tags`** — `ig_id` · `tag`
+- **`ig_handle_history`** — `ig_id` · `old_handle` · `changed_at`
+- **`artist_ig_links`** — `artist_uri` · `ig_id` · `confirmed` (הצע-ואשר; IG יכול לעמוד לבד)
+
+### כללי עיצוב שנסגרו
+1. **התנגשויות / טעויות אנוש:** לשיר יש תוצאה אחת = הטובה ביותר, לפי קדימות
+   `weekly > outofplaylist > miss`. מעגנים לשבוע ה-weekly (המוקדם אם כמה). מקבצים "אותה
+   הקלטה" לפי ISRC **לפני** החלת הכלל. שומרים גלם, מחשבים תוצאה, ומסמנים סתירות ב-`anomaly_flag`.
+2. **התוצאה נגזרת ולא נשמרת** על השיר — מחושבת מ-`playlist_tracks` + `playlists.type`.
+3. **ארכיון = חינם:** `removed_at` + שמירת `release_events`/`artist_scores`. הספירות
+   (#נכנסו / #outofplaylist) נגזרות מ-`release_events`; #נבדק = לוג השתתפות בסריקות.
+
+---
+
 ## פתוח / הבא בתור
 
 1. **צורת עקומת הדעיכה** — קווית (חלון) מול אקספוננציאלית (חצי-חיים). הלב של האלגוריתם.

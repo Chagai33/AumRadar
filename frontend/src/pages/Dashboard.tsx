@@ -408,7 +408,18 @@ export const Dashboard: React.FC = () => {
             startD = new Date(sy, sm - 1, sd);
             endD = new Date(ey, em - 1, ed);
             selSuffix = viewingHistory.partial_scan ? ' [SEL]' : '';
+        } else if (scanDateRange) {
+            // Use the ACTUAL scanned range (captured at scan start), NOT a fresh
+            // recompute from "today". Recomputing named the playlist with the wrong
+            // week whenever the export happened after the week rolled over — the name
+            // then reflected the export day's week instead of the releases' week.
+            const [sy, sm, sd] = scanDateRange.start.split('-').map(Number);
+            const [ey, em, ed] = scanDateRange.end.split('-').map(Number);
+            startD = new Date(sy, sm - 1, sd);
+            endD = new Date(ey, em - 1, ed);
+            selSuffix = scanStatus.partial_scan ? ' [SEL]' : '';
         } else {
+            // Fallback only if no scanned range was stored (defensive).
             selSuffix = scanStatus.partial_scan ? ' [SEL]' : '';
             if (dateOption === 'last7') {
                 startD.setDate(endD.getDate() - 7);

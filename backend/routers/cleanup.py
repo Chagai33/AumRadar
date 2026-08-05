@@ -47,10 +47,17 @@ def _ts() -> str:
 
 
 def _following_flags(sp, ids: List[str]) -> List[bool]:
-    """For each artist id (in order), is the user currently following? Batches of 50."""
+    """For each artist id (in order), is the user currently following? Batches of 50.
+    Calls the raw /me/following/contains endpoint directly — some spotipy versions'
+    current_user_following_artists() helper hits the wrong URL and 400s. On any check
+    error, default to True so the (idempotent) unfollow still runs safely."""
     flags: List[bool] = []
     for i in range(0, len(ids), 50):
-        flags.extend(sp.current_user_following_artists(ids[i:i + 50]))
+        chunk = ids[i:i + 50]
+        try:
+            flags.extend(sp._get("me/following/contains", type="artist", ids=",".join(chunk)))
+        except Exception:
+            flags.extend([True] * len(chunk))
     return flags
 
 

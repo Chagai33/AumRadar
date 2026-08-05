@@ -20,6 +20,7 @@ router = APIRouter()
 CANDIDATES_FILE = "cache/cleanup_candidates.json"
 CLEANUP_DIR = "cache/cleanup"
 LATEST_MANIFEST = f"{CLEANUP_DIR}/latest_manifest.json"
+REMOVED_FILE = f"{CLEANUP_DIR}/removed.json"   # every URI already unfollowed → hidden from candidates
 
 
 class UriList(BaseModel):
@@ -47,12 +48,24 @@ def _following_flags(sp, ids: List[str]) -> List[bool]:
     return flags
 
 
+def _load_removed() -> set:
+    return set(storage.load_json(REMOVED_FILE, default=[]) or [])
+
+
+def _save_removed(uris: set):
+    storage.save_json(REMOVED_FILE, sorted(uris))
+
+
 @router.get("/cleanup/candidates")
 def get_candidates():
+    """Serve the candidate list, hiding artists already unfollowed (so they don't
+    reappear after a refresh)."""
     data = storage.load_json(CANDIDATES_FILE, default=None)
     if data is None:
         raise HTTPException(404, "No candidates file found.")
-    return data
+    removed = _load_removed()
+    cands = [c for c in data.get("candidates", []) if c.get("artist_uri") not in removed]
+    return {**data, "candidates": cands, "count": len(cands), "removed_so_far": len(removed)}
 
 
 @router.post("/cleanup/dry-run")
@@ -101,6 +114,10 @@ def unfollow(request: Request, body: UriList):
     storage.save_json(f"{CLEANUP_DIR}/manifest_{ts}.json", manifest)
     storage.save_json(LATEST_MANIFEST, manifest)
 
+    # Hide the removed artists from the candidates list (persists across refreshes).
+    if actually:
+        _save_removed(_load_removed() | set(actually))
+
     return {"manifest_id": ts, "requested": len(uniq),
             "were_followed": len(actually), "not_followed": len(uniq) - len(actually),
             "errors": errors}
@@ -126,6 +143,8 @@ def undo(request: Request, body: UndoReq):
         except Exception as e:
             errors.append(str(e))
         time.sleep(0.2)
+    # Re-followed artists become candidates again.
+    _save_removed(_load_removed() - set(dict.fromkeys(uris)))
     return {"refollowed": done, "errors": errors}
 
 

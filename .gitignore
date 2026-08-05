@@ -16,3 +16,7 @@ artist-health/data/playlists/*.docx
 # Artist Health Engine — official playlist exports + analysis CSVs (personal; keep out of the public repo)
 artist-health/data/official/
 artist-health/data/*.csv
+
+# Artist Health Engine — cleanup data (personal; keep out of the public repo)
+cache/cleanup_candidates.json
+cache/cleanup/

@@ -102,10 +102,6 @@ export const Cleanup: React.FC = () => {
           {data?.count} מועמדים · רף {data?.threshold}+ · {data?.window}
         </span>
         <div className="ms-auto flex gap-2">
-          <button onClick={() => post('backup', '/api/cleanup/backup')} disabled={!!busy}
-            className="px-3 py-1.5 text-sm rounded bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50">
-            {busy === 'backup' ? 'מגבה…' : 'גבה עוקבים'}
-          </button>
           <button onClick={() => post('undo', '/api/cleanup/undo')} disabled={!!busy}
             className="px-3 py-1.5 text-sm rounded bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50">
             {busy === 'undo' ? 'משחזר…' : '↩ בטל הסרה אחרונה'}
@@ -137,9 +133,8 @@ export const Cleanup: React.FC = () => {
       {result && (
         <div className={`mx-5 mt-3 p-3 rounded text-sm ${result.kind === 'error' ? 'bg-red-900/40 text-red-300' : 'bg-zinc-800'}`}>
           {result.kind === 'error' && <>שגיאה: {result.msg}</>}
-          {result.kind === 'backup' && <>✅ גובו {result.count} עוקבים (מזהה גיבוי {result.backup_id}).</>}
-          {result.kind === 'dry' && <>🔎 הרצת יבש: יוסרו <b>{result.will_unfollow}</b> · כבר לא-עוקב {result.already_not_followed} · מ-{result.current_follow_count} → {result.after_count}.</>}
-          {result.kind === 'unfollow' && <>✅ הוסרו <b>{result.unfollowed}</b> · דולגו {result.skipped_not_followed} · מ-{result.before_count} → {result.after_count}{result.verify_still_following ? ` · ⚠ ${result.verify_still_following} עדיין קיימים` : ''}{result.errors?.length ? ` · שגיאות: ${result.errors.length}` : ''}.</>}
+          {result.kind === 'dry' && <>🔎 מתוך <b>{result.requested}</b> שנבחרו, <b>{result.currently_followed}</b> במעקב עכשio ({result.not_followed} כבר לא).</>}
+          {result.kind === 'unfollow' && <>✅ הוסרו <b>{result.were_followed}</b> אמנים{result.not_followed ? ` (${result.not_followed} כבר לא היו במעקב)` : ''}{result.errors?.length ? ` · שגיאות: ${result.errors.length}` : ''}.</>}
           {result.kind === 'undo' && <>↩ שוחזרו {result.refollowed} אמנים.</>}
         </div>
       )}
@@ -192,7 +187,7 @@ export const Cleanup: React.FC = () => {
           <div className="bg-[#202020] rounded-lg p-6 max-w-md w-full" onClick={e => e.stopPropagation()}>
             <h2 className="text-lg font-bold mb-2">לבטל מעקב אחרי {selected.size} אמנים?</h2>
             <p className="text-sm text-zinc-400 mb-4">
-              המערכת קודם <b>מגבה</b> את כל העוקבים שלך, ורק אז מסירה. אפשר לשחזר בכל רגע עם "בטל הסרה אחרונה". ביטול מעקב לא מוחק שירים שאהבת או פלייליסטים.
+              אפשר לשחזר בכל רגע עם "בטל הסרה אחרונה" — היא זוכרת בדיוק את מי שהוסר. ביטול מעקב לא מוחק שירים שאהבת או פלייליסטים.
             </p>
             <div className="flex justify-end gap-2">
               <button onClick={() => setConfirmOpen(false)} className="px-4 py-2 text-sm rounded bg-zinc-700 hover:bg-zinc-600">ביטול</button>

@@ -12,3 +12,7 @@ venv/
 artist-health/data/playlists/*.json
 artist-health/data/playlists/*.csv
 artist-health/data/playlists/*.docx
+
+# Artist Health Engine — official playlist exports + analysis CSVs (personal; keep out of the public repo)
+artist-health/data/official/
+artist-health/data/*.csv

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
 import { LogOut, Search, Calendar, Play, ListMusic, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save, Layers, X, Check, Trash2 } from 'lucide-react';
@@ -637,6 +638,9 @@ export const Dashboard: React.FC = () => {
                     <button onClick={() => setShowAutoSettings(true)} className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] mr-2" title="Automation Settings">
                         <Calendar className="w-5 h-5" />
                     </button>
+                    <Link to="/cleanup" className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] text-lg leading-none" title="ניקוי אמנים">
+                        🧹
+                    </Link>
                     <button onClick={logout} className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-white">
                         <LogOut className="w-5 h-5" />
                     </button>

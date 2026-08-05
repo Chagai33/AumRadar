@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
+import { Cleanup } from './pages/Cleanup';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const logoVariants = {
@@ -75,6 +76,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Dashboard />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/cleanup"
+              element={
+                <ProtectedRoute>
+                  <Cleanup />
                 </ProtectedRoute>
               }
             />

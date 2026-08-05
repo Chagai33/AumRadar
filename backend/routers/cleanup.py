@@ -20,7 +20,8 @@ router = APIRouter()
 CANDIDATES_FILE = "cache/cleanup_candidates.json"
 CLEANUP_DIR = "cache/cleanup"
 LATEST_MANIFEST = f"{CLEANUP_DIR}/latest_manifest.json"
-REMOVED_FILE = f"{CLEANUP_DIR}/removed.json"   # every URI already unfollowed → hidden from candidates
+REMOVED_FILE = f"{CLEANUP_DIR}/removed.json"       # every URI already unfollowed → hidden from candidates
+PROTECTED_FILE = f"{CLEANUP_DIR}/protected.json"   # URIs the user protected → never removable
 
 
 class UriList(BaseModel):
@@ -30,6 +31,11 @@ class UriList(BaseModel):
 class UndoReq(BaseModel):
     manifest_id: Optional[str] = None
     uris: Optional[List[str]] = None
+
+
+class ProtectReq(BaseModel):
+    uri: str
+    protected: bool = True
 
 
 def _uri_to_id(uri: str) -> str:
@@ -56,16 +62,38 @@ def _save_removed(uris: set):
     storage.save_json(REMOVED_FILE, sorted(uris))
 
 
+def _load_protected() -> set:
+    return set(storage.load_json(PROTECTED_FILE, default=[]) or [])
+
+
+def _save_protected(uris: set):
+    storage.save_json(PROTECTED_FILE, sorted(uris))
+
+
 @router.get("/cleanup/candidates")
 def get_candidates():
-    """Serve the candidate list, hiding artists already unfollowed (so they don't
-    reappear after a refresh)."""
+    """Serve the candidate list, hiding artists already unfollowed. Protected artists
+    stay in the list (the UI marks them with a lock) but are never removable."""
     data = storage.load_json(CANDIDATES_FILE, default=None)
     if data is None:
         raise HTTPException(404, "No candidates file found.")
     removed = _load_removed()
     cands = [c for c in data.get("candidates", []) if c.get("artist_uri") not in removed]
-    return {**data, "candidates": cands, "count": len(cands), "removed_so_far": len(removed)}
+    return {**data, "candidates": cands, "count": len(cands),
+            "removed_so_far": len(removed), "protected": sorted(_load_protected())}
+
+
+@router.post("/cleanup/protect")
+def protect(request: Request, body: ProtectReq):
+    """Mark an artist protected (never removable), or unprotect it."""
+    get_spotify_client(request)  # session-gate
+    protected = _load_protected()
+    if body.protected:
+        protected.add(body.uri)
+    else:
+        protected.discard(body.uri)
+    _save_protected(protected)
+    return {"uri": body.uri, "protected": body.protected, "protected_count": len(protected)}
 
 
 @router.post("/cleanup/dry-run")
@@ -91,6 +119,10 @@ def unfollow(request: Request, body: UriList):
     if not uniq:
         raise HTTPException(400, "No uris provided.")
     me = sp.current_user()  # account-safety: confirm whose account this is
+    protected = _load_protected()
+    uniq = [u for u in uniq if u not in protected]   # never touch protected artists
+    if not uniq:
+        raise HTTPException(400, "All selected artists are protected.")
     ids = [_uri_to_id(u) for u in uniq]
 
     # Which were actually followed (fast, selected only) — for the manifest + feedback.

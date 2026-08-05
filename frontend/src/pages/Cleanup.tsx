@@ -20,6 +20,7 @@ interface CandResp {
   window: string;
   count: number;
   candidates: Candidate[];
+  protected?: string[];
 }
 
 const TIERS = ['50+', '21-50', '11-20', '6-10'];
@@ -32,6 +33,7 @@ export const Cleanup: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [protectedSet, setProtectedSet] = useState<Set<string>>(new Set());
   const [tierFilter, setTierFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState<string>('');
@@ -40,7 +42,7 @@ export const Cleanup: React.FC = () => {
 
   useEffect(() => {
     axios.get('/api/cleanup/candidates')
-      .then(r => setData(r.data))
+      .then(r => { setData(r.data); setProtectedSet(new Set(r.data.protected || [])); })
       .catch(e => setErr(e.response?.data?.detail || e.message))
       .finally(() => setLoading(false));
   }, []);
@@ -60,14 +62,22 @@ export const Cleanup: React.FC = () => {
     return m;
   }, [data]);
 
-  const toggle = (uri: string) => setSelected(prev => {
-    const n = new Set(prev); n.has(uri) ? n.delete(uri) : n.add(uri); return n;
-  });
-  const selectShown = () => setSelected(prev => { const n = new Set(prev); shown.forEach(c => n.add(c.artist_uri)); return n; });
+  const toggle = (uri: string) => {
+    if (protectedSet.has(uri)) return;   // protected artists can't be selected
+    setSelected(prev => { const n = new Set(prev); n.has(uri) ? n.delete(uri) : n.add(uri); return n; });
+  };
+  const selectShown = () => setSelected(prev => { const n = new Set(prev); shown.forEach(c => { if (!protectedSet.has(c.artist_uri)) n.add(c.artist_uri); }); return n; });
   const selectTier = (t: string) => setSelected(prev => {
-    const n = new Set(prev); (data?.candidates || []).filter(c => c.tier === t).forEach(c => n.add(c.artist_uri)); return n;
+    const n = new Set(prev); (data?.candidates || []).filter(c => c.tier === t && !protectedSet.has(c.artist_uri)).forEach(c => n.add(c.artist_uri)); return n;
   });
   const clearSel = () => setSelected(new Set());
+
+  const toggleProtect = async (uri: string, makeProtected: boolean) => {
+    setProtectedSet(prev => { const n = new Set(prev); makeProtected ? n.add(uri) : n.delete(uri); return n; });
+    if (makeProtected) setSelected(prev => { const n = new Set(prev); n.delete(uri); return n; });
+    try { await axios.post('/api/cleanup/protect', { uri, protected: makeProtected }); }
+    catch { setProtectedSet(prev => { const n = new Set(prev); makeProtected ? n.delete(uri) : n.add(uri); return n; }); }
+  };
 
   const post = async (kind: string, url: string, body?: any) => {
     setBusy(kind); setResult(null);
@@ -83,8 +93,12 @@ export const Cleanup: React.FC = () => {
   const doUnfollow = async () => {
     setConfirmOpen(false);
     const res = await post('unfollow', '/api/cleanup/unfollow', { uris: Array.from(selected) });
-    if (res && res.unfollowed >= 0) {
-      setData(d => d ? { ...d, candidates: d.candidates.filter(c => !selected.has(c.artist_uri)) } : d);
+    if (res) {  // post() returns the data on success, undefined on error
+      setData(d => {
+        if (!d) return d;
+        const remaining = d.candidates.filter(c => !selected.has(c.artist_uri));
+        return { ...d, candidates: remaining, count: remaining.length };
+      });
       setSelected(new Set());
     }
   };
@@ -142,21 +156,27 @@ export const Cleanup: React.FC = () => {
       {/* list */}
       <div className="px-3 sm:px-5 mt-3">
         {shown.map(c => {
+          const isProt = protectedSet.has(c.artist_uri);
           const sel = selected.has(c.artist_uri);
           return (
             <div key={c.artist_uri} onClick={() => toggle(c.artist_uri)}
-              className={`flex items-center gap-3 p-2 rounded cursor-pointer border ${sel ? 'bg-emerald-950/50 border-emerald-700' : 'border-transparent hover:bg-zinc-800/60'}`}>
-              <input type="checkbox" readOnly checked={sel} className="w-4 h-4 accent-emerald-500" />
+              className={`flex items-center gap-3 p-2 rounded border ${isProt ? 'opacity-60 border-transparent cursor-default' : sel ? 'bg-emerald-950/50 border-emerald-700 cursor-pointer' : 'border-transparent hover:bg-zinc-800/60 cursor-pointer'}`}>
+              <input type="checkbox" readOnly disabled={isProt} checked={sel} className="w-4 h-4 accent-emerald-500" />
               {c.image
                 ? <img src={c.image} alt="" className="w-10 h-10 rounded-full object-cover" />
                 : <div className="w-10 h-10 rounded-full bg-zinc-700" />}
               <div className="min-w-0 flex-1">
-                <div className="font-medium truncate">{c.artist}</div>
+                <div className="font-medium truncate">{c.artist}{isProt && <span className="ms-1 text-amber-400">🔒</span>}</div>
                 <div className="text-xs text-zinc-500 truncate">{c.genres || '—'}</div>
               </div>
               <div className="text-xs text-zinc-500 hidden sm:block w-24 text-center">{(c.followers || 0).toLocaleString()} עוקבים</div>
               <div className="text-sm text-center w-24"><b>{c.releases}</b> <span className="text-zinc-500">שחרורים</span></div>
               <span className={`text-xs text-white px-2 py-0.5 rounded ${tierColor[c.tier] || 'bg-zinc-600'}`}>{c.tier}</span>
+              <button onClick={e => { e.stopPropagation(); toggleProtect(c.artist_uri, !isProt); }}
+                title={isProt ? 'בטל הגנה' : 'הגן מהסרה'}
+                className={`text-lg w-8 text-center ${isProt ? 'text-amber-400' : 'text-zinc-500 hover:text-amber-400'}`}>
+                {isProt ? '🔒' : '🔓'}
+              </button>
               <a href={c.spotify_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
                 className="text-xs text-emerald-400 hover:underline w-16 text-center">Spotify ↗</a>
             </div>

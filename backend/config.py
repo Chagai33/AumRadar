@@ -18,6 +18,10 @@ class Config:
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://127.0.0.1:5174")
     
     # Scopes
-    SCOPE = 'playlist-modify-public playlist-modify-private user-follow-read user-follow-modify user-library-read user-library-modify user-read-email user-read-private'
+    # playlist-read-private + playlist-read-collaborative are required for Recon to list
+    # ALL the user's playlists via /me/playlists (without them the endpoint returns only
+    # public ones). Adding a scope invalidates existing session tokens → users must
+    # log out and back in once to re-consent.
+    SCOPE = 'playlist-read-private playlist-read-collaborative playlist-modify-public playlist-modify-private user-follow-read user-follow-modify user-library-read user-library-modify user-read-email user-read-private'
 
 settings = Config()

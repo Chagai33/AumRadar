@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from .config import settings
-from .routers import auth, scan, cleanup
+from .routers import auth, scan, cleanup, recon
 import os
 
 app = FastAPI(title="Aum Radar")
@@ -38,6 +38,7 @@ app.add_middleware(
 app.include_router(auth.router, tags=["Auth"])
 app.include_router(scan.router, prefix="/api", tags=["Scan"])
 app.include_router(cleanup.router, prefix="/api", tags=["Cleanup"])
+app.include_router(recon.router, prefix="/api", tags=["Recon"])
 
 @app.get("/")
 def read_root():

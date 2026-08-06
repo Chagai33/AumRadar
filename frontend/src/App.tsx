@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
 import { Cleanup } from './pages/Cleanup';
+import { Recon } from './pages/Recon';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const logoVariants = {
@@ -84,6 +85,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Cleanup />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/recon"
+              element={
+                <ProtectedRoute>
+                  <Recon />
                 </ProtectedRoute>
               }
             />

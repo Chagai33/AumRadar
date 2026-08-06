@@ -133,6 +133,18 @@ async def start_scan(settings: ScanSettings, background_tasks: BackgroundTasks, 
         raise HTTPException(status_code=503, detail=result.get("message", "could not start scan"))
     return {"status": "started", "settings": engine_settings, "trigger": result}
 
+@router.post("/refresh-artists")
+async def refresh_artists(background_tasks: BackgroundTasks, sp=Depends(get_spotify_client)):
+    """Update ONLY the followed-artists cache (no release scan) — runs as the same
+    Cloud Run Job in 'refresh_artists' mode so it survives a closed tab."""
+    _reject_if_running()
+    app_sp = get_app_client()
+    result = trigger_scan_job("refresh_artists", sp=sp, app_sp=app_sp,
+                              background_tasks=background_tasks)
+    if result.get("status") == "error":
+        raise HTTPException(status_code=503, detail=result.get("message", "could not start refresh"))
+    return {"status": "started", "trigger": result}
+
 @router.get("/status")
 def get_scan_status():
     return scanner.get_status()

@@ -9,13 +9,28 @@ where no Job exists, it falls back to the old BackgroundTask behaviour so the ap
 still works end-to-end on a laptop.
 """
 import os
+import time
 import logging
 from .storage_manager import storage
-from .scanner import scanner
+from .scanner import scanner, SCAN_STATE_FILE
 
 logger = logging.getLogger(__name__)
 
 JOB_REQUEST_FILE = "cache/scan_job_request.json"
+
+
+def _write_starting_state(mode):
+    """Reflect the scan in the shared state the instant it's triggered, so the UI
+    shows it immediately instead of looking idle for the ~1-2 min the Job takes to
+    cold-start. is_running=True keeps the frontend polling; status='starting' is
+    exempted by the Job's concurrency guard, and get_status()'s 120s heartbeat
+    staleness clears it if the Job never boots."""
+    label = "Updating artist list…" if mode == "refresh_artists" else "Starting scan…"
+    storage.save_json(SCAN_STATE_FILE, {
+        "is_running": True, "status": "starting", "progress": 0, "total": 0,
+        "results_count": 0, "current_artist": label, "logs": [],
+        "heartbeat": time.time(),
+    })
 
 
 def _job_configured():
@@ -63,6 +78,8 @@ def trigger_scan_job(mode, sp=None, app_sp=None, settings=None,
             # no-op or run a STALE prior request. Fail loudly instead of launching.
             return {"status": "error", "message": "could not persist scan request to storage; scan not started"}
 
+    _write_starting_state(mode)   # immediate UI feedback across the Job's cold-start
+
     if _job_configured():
         _run_cloud_job(mode)
         return {"status": "job_triggered", "mode": mode}
@@ -84,6 +101,8 @@ def trigger_scan_job(mode, sp=None, app_sp=None, settings=None,
         return {"status": "error", "message": "no Cloud Run Job configured and no task runner available"}
     if mode == "resume":
         background_tasks.add_task(scanner.resume_scan, sp, app_sp)
+    elif mode == "refresh_artists":
+        background_tasks.add_task(scanner.refresh_followed_artists, sp)
     else:
         background_tasks.add_task(scanner.scan_process, sp, settings, app_sp, auto_export_name)
     return {"status": "started_local", "mode": mode}

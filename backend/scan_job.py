@@ -41,6 +41,8 @@ def _another_instance_alive():
     st = storage.load_json(SCAN_STATE_FILE)
     if not st or not st.get("is_running"):
         return False
+    if st.get("status") == "starting":
+        return False   # the Service's pre-launch marker for THIS job, not a live scan
     hb = st.get("heartbeat", 0)
     return bool(hb) and (time.time() - hb < HEARTBEAT_ALIVE_SEC)
 
@@ -84,6 +86,11 @@ async def _run():
     if mode in ("resume", "resume_due"):
         _log("resuming from checkpoint.")
         await scanner.resume_scan(sp, app_sp)   # no-ops safely if nothing to resume
+        return 0
+
+    if mode == "refresh_artists":
+        _log("refresh-artists-only: updating the followed-artists cache (no scan).")
+        await scanner.refresh_followed_artists(sp)
         return 0
 
     if mode == "scheduled":

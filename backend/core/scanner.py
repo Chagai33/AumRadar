@@ -24,6 +24,9 @@ MAX_HISTORY = 50
 SNAPSHOT_FILE = f"{CACHE_DIR}/scan_artists_snapshot.json"
 CHECKPOINT_FILE = f"{CACHE_DIR}/scan_checkpoint.json"
 AUTO_RESUME_FILE = f"{CACHE_DIR}/auto_resume.json"
+# A user STOP writes this from the Service; the running Job re-reads it each chunk
+# (they are separate processes, so an in-memory flag can't cross over).
+STOP_REQUEST_FILE = f"{CACHE_DIR}/scan_stop_request.json"
 
 class AdvancedEngine:
     def __init__(self):
@@ -51,6 +54,14 @@ class AdvancedEngine:
     def _save_state(self):
         self.state["heartbeat"] = time.time()
         storage.save_json(SCAN_STATE_FILE, self.state)
+
+    def _stop_requested(self):
+        """True if a user asked to stop — read from GCS so a STOP issued by the
+        Service reaches the scan running in the separate Job process."""
+        return storage.exists(STOP_REQUEST_FILE)
+
+    def _clear_stop_request(self):
+        storage.delete_file(STOP_REQUEST_FILE)
 
     async def _heartbeat_loop(self, interval=20):
         """Keep SCAN_STATE_FILE's heartbeat fresh on a wall-clock cadence, NOT just
@@ -155,7 +166,31 @@ class AdvancedEngine:
 
         return artists
 
-
+    async def refresh_followed_artists(self, sp):
+        """Update ONLY the followed-artists cache — no release scan. Fast; powers the
+        'Update artist list' button and shares the same status card in the UI."""
+        reset_pacing()
+        self._clear_stop_request()
+        self.state.update({
+            "is_running": True, "status": "refreshing_artists", "progress": 0,
+            "total": 0, "results_count": 0, "current_artist": "Loading Artist List...",
+        })
+        self.state.pop("error", None)
+        self._save_state()
+        self._hb_task = asyncio.create_task(self._heartbeat_loop())
+        try:
+            artists = await self.fetch_all_followed_artists(sp)   # caches on success
+            self.state["total"] = len(artists)
+            self.state["status"] = "artists_updated"
+            self.log(f"Artist list updated: {len(artists)} followed artists.")
+        except Exception as e:
+            self.state["status"] = "error"
+            self.state["error"] = f"Failed to update the artist list: {e}"
+            self.log(f"refresh_followed_artists error: {e}")
+        finally:
+            self._cancel_heartbeat()
+            self.state["is_running"] = False
+            self._save_state()
 
     async def fetch_liked_songs_artists(self, sp, min_count=1):
         artist_counts = {}
@@ -229,6 +264,7 @@ class AdvancedEngine:
         # resume_scan(), never this method.
         storage.delete_file(CHECKPOINT_FILE)
         storage.delete_file(SNAPSHOT_FILE)
+        self._clear_stop_request()   # a leftover STOP must not kill this fresh scan
 
         try:
             # 1. Gather Artists
@@ -380,9 +416,14 @@ class AdvancedEngine:
         critical_error = False
         critical_seconds = -1
         interrupted_error = False
+        stopped_by_user = False
 
         for i in range(start_index, len(artists), chunk_size):
-            if not self.state["is_running"]: break
+            # Re-read the STOP request from GCS every chunk — a user STOP is issued
+            # by the Service, a different process than this scan (the Job).
+            if not self.state["is_running"] or self._stop_requested():
+                stopped_by_user = True
+                break
 
             chunk = artists[i:i + chunk_size]
             self.state["current_artist"] = f"Processing batch {i}-{i+len(chunk)}"
@@ -487,6 +528,23 @@ class AdvancedEngine:
             # Small breathe
             await asyncio.sleep(0.5)
 
+        # User pressed STOP → halt cleanly: keep whatever was collected (save to
+        # results + history), clear the checkpoint (a stop is final, not a resume),
+        # and mark "stopped".
+        if stopped_by_user:
+            self.log(f"Scan STOPPED by user at {len(results_buffer)} tracks — saving partial results.")
+            storage.save_json(RESULTS_FILE, results_buffer)
+            if results_buffer:
+                self._save_to_history(results_buffer, settings)
+            storage.delete_file(CHECKPOINT_FILE)
+            storage.delete_file(SNAPSHOT_FILE)
+            self._clear_stop_request()
+            self.state["is_running"] = False
+            self.state["status"] = "stopped"
+            self.state["results_count"] = len(results_buffer)
+            self._save_state()
+            return
+
         # If we stopped early (rate-limit or network/server), the partial results
         # are already saved to the checkpoint — skip finalize so we don't mark an
         # interrupted scan "completed" or wipe the checkpoint.
@@ -547,6 +605,7 @@ class AdvancedEngine:
         chunk contributes no duplicates."""
         work_sp = app_sp if app_sp else sp
         reset_pacing()   # clear the _CRITICAL_ABORT latch (etc.) before resuming
+        self._clear_stop_request()   # a leftover STOP must not kill this resume
 
         cp = storage.load_json(CHECKPOINT_FILE)
         artists = storage.load_json(SNAPSHOT_FILE)
@@ -786,6 +845,14 @@ class AdvancedEngine:
         self._save_state()
 
     def stop_scan(self):
+        # The scan runs in a SEPARATE Cloud Run Job process, so flipping our own
+        # in-memory flag does nothing to it. Persist a STOP request to GCS (the Job
+        # re-reads it each chunk) and reflect "stopping" in the shared state so the
+        # UI updates immediately.
+        storage.save_json(STOP_REQUEST_FILE, {"requested_at": time.time()})
+        st = storage.load_json(SCAN_STATE_FILE) or self.state
+        st["status"] = "stopping"
+        storage.save_json(SCAN_STATE_FILE, st)
         self.state["is_running"] = False
         self.state["status"] = "stopping"
 

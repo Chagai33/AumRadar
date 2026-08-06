@@ -425,7 +425,17 @@ export const Dashboard: React.FC = () => {
     };
 
     const handleStopScan = async () => {
-        await axios.post('/api/stop');
+        setScanStatus(prev => ({ ...prev, status: 'stopping' }));
+        try { await axios.post('/api/stop'); } catch { /* the poll will reflect the real state */ }
+    };
+
+    const handleRefreshArtists = async () => {
+        try {
+            await axios.post('/api/refresh-artists');
+            setScanStatus(prev => ({ ...prev, is_running: true, status: 'refreshing_artists', current_artist: 'Updating artist list…' }));
+        } catch (e: any) {
+            alert('Failed to update artist list: ' + (e.response?.data?.detail || e.message));
+        }
     };
 
     const formatDuration = (sec: number) => {
@@ -667,10 +677,20 @@ export const Dashboard: React.FC = () => {
                                             <AlertTriangle className="w-5 h-5" />
                                             Spotify Rate Limit Hit
                                         </h2>
-                                    ) : scanStatus.status === 'fetching_artists' ? (
+                                    ) : scanStatus.status === 'stopping' ? (
+                                        <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                                            <RefreshCw className="w-4 h-4 animate-spin text-red-400" />
+                                            Stopping…
+                                        </h2>
+                                    ) : scanStatus.status === 'starting' ? (
+                                        <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                                            <RefreshCw className="w-4 h-4 animate-spin text-[#1DB954]" />
+                                            Starting…
+                                        </h2>
+                                    ) : (scanStatus.status === 'fetching_artists' || scanStatus.status === 'refreshing_artists') ? (
                                         <h2 className="text-lg font-bold text-white flex items-center gap-2">
                                             <RefreshCw className="w-4 h-4 animate-spin text-blue-400" />
-                                            Loading Artist List...
+                                            {scanStatus.status === 'refreshing_artists' ? 'Updating Artist List…' : 'Loading Artist List...'}
                                         </h2>
                                     ) : (
                                         <h2 className="text-lg font-bold text-white flex items-center gap-2">
@@ -686,7 +706,9 @@ export const Dashboard: React.FC = () => {
                                         </p>
                                     ) : (
                                         <p className="text-gray-400 text-sm mt-1">
-                                            Checking artist: <span className="text-[#1DB954] font-medium">{scanStatus.current_artist || 'Initializing...'}</span>
+                                            {scanStatus.status === 'scanning'
+                                                ? <>Checking artist: <span className="text-[#1DB954] font-medium">{scanStatus.current_artist || 'Initializing...'}</span></>
+                                                : <span className="text-[#1DB954] font-medium">{scanStatus.current_artist || 'Working…'}</span>}
                                         </p>
                                     )}
                                 </div>
@@ -695,6 +717,7 @@ export const Dashboard: React.FC = () => {
                                 </button>
                             </div>
 
+                            {scanStatus.total > 0 && (
                             <div className="flex justify-between text-xs text-gray-500 font-mono mt-2">
                                 <span>
                                     {scanStatus.progress} / {scanStatus.total} Artists
@@ -705,6 +728,7 @@ export const Dashboard: React.FC = () => {
                                 )}
                                 <span>{Math.round(percent)}%</span>
                             </div>
+                            )}
                         </motion.div>
                     )}
                 </AnimatePresence>
@@ -782,6 +806,60 @@ export const Dashboard: React.FC = () => {
                                         ? "No new releases found in the selected date range."
                                         : `Found ${results.length} new releases.`
                                     }
+                                </p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => setScanStatus(prev => ({ ...prev, status: 'idle' }))}
+                            className="bg-[#282828] hover:bg-[#333] text-white px-3 py-1 rounded text-sm transition-colors border border-gray-700"
+                        >
+                            Dismiss
+                        </button>
+                    </motion.div>
+                )}
+
+                {/* Artist-list-only update finished */}
+                {scanStatus.status === 'artists_updated' && !scanStatus.is_running && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="bg-green-900/20 border border-[#1DB954]/40 p-4 rounded-xl mb-8 flex items-center justify-between shadow-lg"
+                    >
+                        <div className="flex items-center gap-3">
+                            <div className="bg-[#1DB954]/20 p-2 rounded-full">
+                                <Check className="w-5 h-5 text-[#1DB954]" />
+                            </div>
+                            <div>
+                                <h3 className="font-bold text-white text-lg">Artist list updated</h3>
+                                <p className="text-gray-400 text-sm">
+                                    {scanStatus.total ? `${scanStatus.total} followed artists are now up to date.` : 'Your followed artists are up to date.'}
+                                </p>
+                            </div>
+                        </div>
+                        <button
+                            onClick={() => { setScanStatus(prev => ({ ...prev, status: 'idle' })); checkCacheInfo(); }}
+                            className="bg-[#282828] hover:bg-[#333] text-white px-3 py-1 rounded text-sm transition-colors border border-gray-700"
+                        >
+                            Dismiss
+                        </button>
+                    </motion.div>
+                )}
+
+                {/* Scan stopped by the user */}
+                {scanStatus.status === 'stopped' && !scanStatus.is_running && (
+                    <motion.div
+                        initial={{ opacity: 0, y: -20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="bg-[#1e1e1e] border border-gray-600/40 p-4 rounded-xl mb-8 flex items-center justify-between shadow-lg"
+                    >
+                        <div className="flex items-center gap-3">
+                            <div className="bg-gray-500/20 p-2 rounded-full">
+                                <X className="w-5 h-5 text-gray-300" />
+                            </div>
+                            <div>
+                                <h3 className="font-bold text-white text-lg">Scan stopped</h3>
+                                <p className="text-gray-400 text-sm">
+                                    {scanStatus.results_count > 0 ? `Kept ${scanStatus.results_count} tracks found before stopping.` : 'Stopped before any tracks were found.'}
                                 </p>
                             </div>
                         </div>
@@ -891,6 +969,14 @@ export const Dashboard: React.FC = () => {
                                 >
                                     <Search className="w-5 h-5" />
                                     Start Scan
+                                </button>
+                                <button
+                                    onClick={handleRefreshArtists}
+                                    title="Fetch your latest followed artists from Spotify — updates the list only, no full scan"
+                                    className="bg-[#282828] hover:bg-[#333] text-white font-medium py-2.5 px-4 rounded-lg border border-gray-700 transition-all flex items-center justify-center gap-2 whitespace-nowrap mt-2 md:mt-0"
+                                >
+                                    <RefreshCw className="w-4 h-4" />
+                                    Update artist list
                                 </button>
                             </div>
 

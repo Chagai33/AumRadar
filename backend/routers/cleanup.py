@@ -193,3 +193,13 @@ def latest_manifest():
     if not m:
         return {"exists": False}
     return {"exists": True, "manifest_id": m.get("created"), "count": m.get("count")}
+
+
+@router.get("/cleanup/follow-count")
+def follow_count(request: Request):
+    """Live count of artists the user currently follows — one cheap API call
+    (the paging object carries the exact total)."""
+    sp = get_spotify_client(request)
+    res = sp.current_user_followed_artists(limit=1)
+    total = (res.get("artists") or {}).get("total")
+    return {"count": total, "fetched_at": _ts()}

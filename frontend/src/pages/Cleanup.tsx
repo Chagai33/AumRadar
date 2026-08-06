@@ -34,6 +34,8 @@ export const Cleanup: React.FC = () => {
   const [err, setErr] = useState('');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [protectedSet, setProtectedSet] = useState<Set<string>>(new Set());
+  const [followCount, setFollowCount] = useState<number | null>(null);
+  const [countBusy, setCountBusy] = useState(false);
   const [tierFilter, setTierFilter] = useState<string>('all');
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState<string>('');
@@ -45,6 +47,18 @@ export const Cleanup: React.FC = () => {
       .then(r => { setData(r.data); setProtectedSet(new Set(r.data.protected || [])); })
       .catch(e => setErr(e.response?.data?.detail || e.message))
       .finally(() => setLoading(false));
+  }, []);
+
+  const fetchCount = async () => {
+    setCountBusy(true);
+    try { const r = await axios.get('/api/cleanup/follow-count'); setFollowCount(r.data.count); }
+    catch { /* keep last known */ } finally { setCountBusy(false); }
+  };
+  useEffect(() => {
+    fetchCount();  // on open
+    const onVis = () => { if (document.visibilityState === 'visible') fetchCount(); }; // when returning to the tab
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
   }, []);
 
   const shown = useMemo(() => {
@@ -100,8 +114,11 @@ export const Cleanup: React.FC = () => {
         return { ...d, candidates: remaining, count: remaining.length };
       });
       setSelected(new Set());
+      fetchCount();  // reflect the new follow count
     }
   };
+
+  const doUndo = async () => { await post('undo', '/api/cleanup/undo'); fetchCount(); };
 
   if (loading) return <div className="min-h-screen bg-[#121212] text-zinc-300 flex items-center justify-center">טוען מועמדים…</div>;
   if (err) return <div className="min-h-screen bg-[#121212] text-red-400 flex items-center justify-center p-6">שגיאה: {err}</div>;
@@ -115,8 +132,13 @@ export const Cleanup: React.FC = () => {
         <span className="text-xs text-zinc-500">
           {data?.count} מועמדים · רף {data?.threshold}+ · {data?.window}
         </span>
-        <div className="ms-auto flex gap-2">
-          <button onClick={() => post('undo', '/api/cleanup/undo')} disabled={!!busy}
+        <div className="ms-auto flex items-center gap-2">
+          <span className="text-sm text-zinc-300 flex items-center gap-1.5 bg-zinc-800 rounded-full ps-3 pe-2 py-1" title="מספר עוקבים חי מספוטיפיי">
+            👥 <b className="text-white">{followCount ?? '…'}</b> <span className="text-zinc-500">עוקב</span>
+            <button onClick={fetchCount} disabled={countBusy} title="רענן"
+              className="text-zinc-400 hover:text-white disabled:opacity-50 text-base leading-none">{countBusy ? '⏳' : '↻'}</button>
+          </span>
+          <button onClick={doUndo} disabled={!!busy}
             className="px-3 py-1.5 text-sm rounded bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50">
             {busy === 'undo' ? 'משחזר…' : '↩ בטל הסרה אחרונה'}
           </button>

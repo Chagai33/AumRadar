@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 
@@ -41,6 +41,9 @@ export const Cleanup: React.FC = () => {
   const [busy, setBusy] = useState<string>('');
   const [result, setResult] = useState<any>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number; wait: number } | null>(null);
+  const cancelRef = useRef(false);
+  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
   const loadCandidates = async () => {
     try {
@@ -105,21 +108,49 @@ export const Cleanup: React.FC = () => {
     } finally { setBusy(''); }
   };
 
+  // Resumable: keeps calling the backend with whatever is left, absorbing Spotify's
+  // rate-limit waits, until everything selected is removed (or the user cancels).
   const doUnfollow = async () => {
     setConfirmOpen(false);
-    const res = await post('unfollow', '/api/cleanup/unfollow', { uris: Array.from(selected) });
-    if (res) {  // post() returns the data on success, undefined on error
-      setData(d => {
-        if (!d) return d;
-        const remaining = d.candidates.filter(c => !selected.has(c.artist_uri));
-        return { ...d, candidates: remaining, count: remaining.length };
-      });
-      setSelected(new Set());
-      fetchCount();  // reflect the new follow count
+    const all = Array.from(selected);
+    const total = all.length;
+    if (!total) return;
+    cancelRef.current = false;
+    setBusy('unfollow'); setResult(null);
+    setProgress({ done: 0, total, wait: 0 });
+    let remaining = all, manifestId: string | undefined, done = 0, stuck = 0;
+    try {
+      while (remaining.length && !cancelRef.current) {
+        let res: any;
+        try {
+          res = (await axios.post('/api/cleanup/unfollow',
+            { uris: remaining, manifest_id: manifestId })).data;
+        } catch {
+          // network / proxy timeout mid-batch — pause and retry the same remaining
+          if (++stuck > 6) { setResult({ kind: 'error', msg: 'ההסרה נתקעה — נסה שוב מאוחר יותר.' }); break; }
+          for (let w = 12; w > 0 && !cancelRef.current; w--) { setProgress({ done, total, wait: w }); await sleep(1000); }
+          continue;
+        }
+        manifestId = res.manifest_id;
+        done += res.unfollowed || 0;
+        remaining = res.remaining_uris || [];
+        if (!res.unfollowed && !res.retry_after) { if (++stuck >= 2) break; } else stuck = 0;
+        if (remaining.length && res.retry_after) {
+          for (let w = res.retry_after; w > 0 && !cancelRef.current; w--) { setProgress({ done, total, wait: w }); await sleep(1000); }
+        }
+        setProgress({ done, total, wait: 0 });
+      }
+      setResult({ kind: 'unfollow', unfollowed: done, failed: remaining.length,
+        cancelled: cancelRef.current && remaining.length > 0 });
+    } finally {
+      setProgress(null); setBusy(''); setSelected(new Set());
+      await loadCandidates();  // reflect reality: removed drop off, any leftover stay
+      fetchCount();
     }
   };
+  const cancelUnfollow = () => { cancelRef.current = true; };
 
-  const doUndo = async () => { await post('undo', '/api/cleanup/undo'); fetchCount(); };
+  const doUndo = async () => { await post('undo', '/api/cleanup/undo'); await loadCandidates(); fetchCount(); };
 
   if (loading) return <div className="min-h-screen bg-[#121212] text-zinc-300 flex items-center justify-center">טוען מועמדים…</div>;
   if (err) return <div className="min-h-screen bg-[#121212] text-red-400 flex items-center justify-center p-6">שגיאה: {err}</div>;
@@ -171,8 +202,29 @@ export const Cleanup: React.FC = () => {
         <div className={`mx-5 mt-3 p-3 rounded text-sm ${result.kind === 'error' ? 'bg-red-900/40 text-red-300' : 'bg-zinc-800'}`}>
           {result.kind === 'error' && <>שגיאה: {result.msg}</>}
           {result.kind === 'dry' && <>🔎 מתוך <b>{result.requested}</b> שנבחרו, <b>{result.currently_followed}</b> במעקב עכשio ({result.not_followed} כבר לא).</>}
-          {result.kind === 'unfollow' && <>✅ הוסרו <b>{result.unfollowed}</b> אמנים{result.failed ? ` · ${result.failed} נכשלו (הגבלת קצב — פשוט נסה שוב)` : ''}.</>}
+          {result.kind === 'unfollow' && (result.cancelled
+            ? <>⏹ בוטל — הוסרו <b>{result.unfollowed}</b> אמנים, נשארו {result.failed}.</>
+            : <>✅ הוסרו <b>{result.unfollowed}</b> אמנים{result.failed ? ` · ${result.failed} לא הוסרו` : ' — הכל הושלם 🎉'}.</>)}
           {result.kind === 'undo' && <>↩ שוחזרו {result.refollowed} אמנים.</>}
+        </div>
+      )}
+
+      {/* live progress while removing */}
+      {progress && (
+        <div className="mx-5 mt-3 p-3 rounded bg-zinc-800">
+          <div className="flex items-center justify-between text-sm mb-2">
+            <span>
+              {progress.wait > 0
+                ? <>⏳ ספוטיפיי מגביל קצב — ממתין <b>{progress.wait}</b> ש׳ וממשיך… <span className="text-zinc-500">({progress.done}/{progress.total} הוסרו)</span></>
+                : <>מסיר… <b className="text-emerald-400">{progress.done}</b> מתוך {progress.total}</>}
+            </span>
+            <button onClick={cancelUnfollow}
+              className="px-3 py-1 text-xs rounded bg-zinc-700 hover:bg-zinc-600">בטל</button>
+          </div>
+          <div className="h-2 rounded bg-zinc-700 overflow-hidden">
+            <div className="h-full bg-emerald-500 transition-all duration-300"
+              style={{ width: `${progress.total ? Math.round((progress.done / progress.total) * 100) : 0}%` }} />
+          </div>
         </div>
       )}
 

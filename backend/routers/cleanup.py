@@ -32,6 +32,11 @@ class UriList(BaseModel):
     uris: List[str] = []
 
 
+class UnfollowReq(BaseModel):
+    uris: List[str] = []
+    manifest_id: Optional[str] = None
+
+
 class UndoReq(BaseModel):
     manifest_id: Optional[str] = None
     uris: Optional[List[str]] = None
@@ -48,6 +53,18 @@ def _uri_to_id(uri: str) -> str:
 
 def _ts() -> str:
     return datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+
+
+def _retry_after_seconds(e) -> Optional[int]:
+    """If e is a Spotify 429, the Retry-After in seconds (client keeps it because 429
+    is excluded from the client's status_forcelist); otherwise None."""
+    if getattr(e, "http_status", None) != 429:
+        return None
+    hdrs = getattr(e, "headers", None) or {}
+    try:
+        return max(1, int(hdrs.get("Retry-After", 1)))
+    except Exception:
+        return 1
 
 
 def _following_flags(sp, ids: List[str]) -> List[bool]:
@@ -99,46 +116,56 @@ def dry_run(request: Request, body: UriList):
 
 
 @router.post("/cleanup/unfollow")
-def unfollow(request: Request, body: UriList):
-    """Unfollow the selected via the raw DELETE /me/following endpoint, in batches of
-    50, retrying a failed batch once. Records ONLY the batches that actually succeeded."""
+def unfollow(request: Request, body: UnfollowReq):
+    """Resumable bulk-unfollow. Processes a time-boxed slice of `uris` per call so the
+    request stays under the proxy limit; records ONLY real successes to a manifest that
+    accumulates across resumes; and returns what's left + how long Spotify asked us to
+    wait (retry_after) so the client resumes automatically with a live progress bar."""
     sp = get_spotify_client(request)
-    uniq = list(dict.fromkeys(body.uris))
-    if not uniq:
-        raise HTTPException(400, "No uris provided.")
-    me = sp.current_user()
+    queue = [u for u in dict.fromkeys(body.uris) if u]
     protected = _load_protected()
-    uniq = [u for u in uniq if u not in protected]
-    if not uniq:
-        raise HTTPException(400, "All selected artists are protected.")
+    queue = [u for u in queue if u not in protected]
+    if not queue:
+        raise HTTPException(400, "No removable artists (empty or all protected).")
 
-    removed_ok, errors = [], []
-    for i in range(0, len(uniq), 50):
-        chunk = uniq[i:i + 50]
+    mid = body.manifest_id or _ts()
+    mpath = f"{CLEANUP_DIR}/manifest_{mid}.json"
+    manifest = storage.load_json(mpath) or {
+        "created": mid, "user": sp.current_user().get("id"), "unfollowed_uris": []}
+
+    removed_now, errors, retry_after = [], [], 0
+    start = time.time()
+    i = 0
+    while i < len(queue):
+        if time.time() - start > 15.0:      # stay well under the ~26s proxy limit
+            break
+        chunk = queue[i:i + 50]
         cids = ",".join(_uri_to_id(u) for u in chunk)
-        ok = False
-        for attempt in range(2):
-            try:
-                sp._delete("me/following?type=artist&ids=" + cids)
-                ok = True
-                break
-            except Exception as e:
+        try:
+            sp._delete("me/following?type=artist&ids=" + cids)
+            removed_now.extend(chunk)
+            i += 50
+            time.sleep(0.1)
+        except Exception as e:
+            ra = _retry_after_seconds(e)
+            if ra is None:                  # not a rate-limit → real error, stop
                 errors.append(str(e))
-                if attempt == 0:
-                    time.sleep(1.2)   # brief backoff, then one retry
-        if ok:
-            removed_ok.extend(chunk)
-        time.sleep(0.2)
+                break
+            if ra <= 3:                     # short wait — absorb it and retry the chunk
+                time.sleep(ra + 0.5)
+                continue
+            retry_after = ra                # long wait — hand back to the client
+            break
 
-    ts = _ts()
-    manifest = {"created": ts, "user": me.get("id"),
-                "unfollowed_uris": removed_ok, "count": len(removed_ok)}
-    storage.save_json(f"{CLEANUP_DIR}/manifest_{ts}.json", manifest)
+    remaining = queue[i:]
+    manifest["unfollowed_uris"] = list(dict.fromkeys(manifest["unfollowed_uris"] + removed_now))
+    manifest["count"] = len(manifest["unfollowed_uris"])
+    storage.save_json(mpath, manifest)
     storage.save_json(LATEST_MANIFEST, manifest)
 
-    return {"manifest_id": ts, "requested": len(body.uris),
-            "unfollowed": len(removed_ok), "failed": len(uniq) - len(removed_ok),
-            "errors": errors[:3]}
+    return {"manifest_id": mid, "unfollowed": len(removed_now),
+            "total_unfollowed": manifest["count"], "remaining_uris": remaining,
+            "retry_after": retry_after, "done": not remaining, "errors": errors[:2]}
 
 
 @router.post("/cleanup/undo")

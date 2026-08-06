@@ -127,7 +127,7 @@ export const Cleanup: React.FC = () => {
             { uris: remaining, manifest_id: manifestId })).data;
         } catch {
           // network / proxy timeout mid-batch — pause and retry the same remaining
-          if (++stuck > 6) { setResult({ kind: 'error', msg: 'ההסרה נתקעה — נסה שוב מאוחר יותר.' }); break; }
+          if (++stuck > 6) { setResult({ kind: 'error', msg: 'Removal stalled — please try again later.' }); break; }
           for (let w = 12; w > 0 && !cancelRef.current; w--) { setProgress({ done, total, wait: w }); await sleep(1000); }
           continue;
         }
@@ -152,27 +152,27 @@ export const Cleanup: React.FC = () => {
 
   const doUndo = async () => { await post('undo', '/api/cleanup/undo'); await loadCandidates(); fetchCount(); };
 
-  if (loading) return <div className="min-h-screen bg-[#121212] text-zinc-300 flex items-center justify-center">טוען מועמדים…</div>;
-  if (err) return <div className="min-h-screen bg-[#121212] text-red-400 flex items-center justify-center p-6">שגיאה: {err}</div>;
+  if (loading) return <div className="min-h-screen bg-[#121212] text-zinc-300 flex items-center justify-center">Loading candidates…</div>;
+  if (err) return <div className="min-h-screen bg-[#121212] text-red-400 flex items-center justify-center p-6">Error: {err}</div>;
 
   return (
-    <div dir="rtl" className="min-h-screen bg-[#121212] text-zinc-200 pb-28">
+    <div className="min-h-screen bg-[#121212] text-zinc-200 pb-28">
       {/* header */}
       <div className="sticky top-0 z-20 bg-[#181818] border-b border-zinc-800 px-5 py-3 flex flex-wrap items-center gap-3">
-        <Link to="/dashboard" className="text-zinc-400 hover:text-white text-sm">← לוח הבקרה</Link>
-        <h1 className="text-lg font-bold">🧹 ניקוי אמנים</h1>
+        <Link to="/dashboard" className="text-zinc-400 hover:text-white text-sm">← Dashboard</Link>
+        <h1 className="text-lg font-bold">🧹 Artist Cleanup</h1>
         <span className="text-xs text-zinc-500">
-          {data?.count} מועמדים · רף {data?.threshold}+ · {data?.window}
+          {data?.count} candidates · {data?.threshold}+ releases · {data?.window}
         </span>
         <div className="ms-auto flex items-center gap-2">
-          <span className="text-sm text-zinc-300 flex items-center gap-1.5 bg-zinc-800 rounded-full ps-3 pe-2 py-1" title="מספר עוקבים חי מספוטיפיי">
-            👥 <b className="text-white">{followCount ?? '…'}</b> <span className="text-zinc-500">עוקב</span>
-            <button onClick={fetchCount} disabled={countBusy} title="רענן"
+          <span className="text-sm text-zinc-300 flex items-center gap-1.5 bg-zinc-800 rounded-full ps-3 pe-2 py-1" title="Artists you currently follow (live from Spotify)">
+            👥 <b className="text-white">{followCount ?? '…'}</b> <span className="text-zinc-500">following</span>
+            <button onClick={fetchCount} disabled={countBusy} title="Refresh"
               className="text-zinc-400 hover:text-white disabled:opacity-50 text-base leading-none">{countBusy ? '⏳' : '↻'}</button>
           </span>
           <button onClick={doUndo} disabled={!!busy}
             className="px-3 py-1.5 text-sm rounded bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50">
-            {busy === 'undo' ? 'משחזר…' : '↩ בטל הסרה אחרונה'}
+            {busy === 'undo' ? 'Restoring…' : '↩ Undo last removal'}
           </button>
         </div>
       </div>
@@ -180,32 +180,32 @@ export const Cleanup: React.FC = () => {
       {/* toolbar */}
       <div className="px-5 py-3 flex flex-wrap items-center gap-2 border-b border-zinc-800">
         <button onClick={() => setTierFilter('all')}
-          className={`px-2.5 py-1 text-xs rounded ${tierFilter === 'all' ? 'bg-white text-black' : 'bg-zinc-800'}`}>הכל</button>
+          className={`px-2.5 py-1 text-xs rounded ${tierFilter === 'all' ? 'bg-white text-black' : 'bg-zinc-800'}`}>All</button>
         {TIERS.map(t => (
           <div key={t} className="flex items-center rounded overflow-hidden">
             <button onClick={() => setTierFilter(t)}
               className={`px-2.5 py-1 text-xs ${tierFilter === t ? 'bg-white text-black' : 'bg-zinc-800'}`}>
               {t} <span className="opacity-60">({tierCounts[t] || 0})</span>
             </button>
-            <button onClick={() => selectTier(t)} title="בחר שכבה שלמה"
+            <button onClick={() => selectTier(t)} title="Select entire tier"
               className="px-2 py-1 text-xs bg-zinc-700 hover:bg-emerald-700">✓</button>
           </div>
         ))}
-        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="חיפוש שם / ז'אנר…"
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name / genre…"
           className="ms-2 px-3 py-1 text-sm bg-zinc-800 rounded outline-none w-52" />
-        <button onClick={selectShown} className="px-2.5 py-1 text-xs rounded bg-emerald-800 hover:bg-emerald-700">בחר את המוצגים ({shown.length})</button>
-        <button onClick={clearSel} className="px-2.5 py-1 text-xs rounded bg-zinc-800 hover:bg-zinc-700">נקה בחירה</button>
+        <button onClick={selectShown} className="px-2.5 py-1 text-xs rounded bg-emerald-800 hover:bg-emerald-700">Select shown ({shown.length})</button>
+        <button onClick={clearSel} className="px-2.5 py-1 text-xs rounded bg-zinc-800 hover:bg-zinc-700">Clear selection</button>
       </div>
 
       {/* result banner */}
       {result && (
         <div className={`mx-5 mt-3 p-3 rounded text-sm ${result.kind === 'error' ? 'bg-red-900/40 text-red-300' : 'bg-zinc-800'}`}>
-          {result.kind === 'error' && <>שגיאה: {result.msg}</>}
-          {result.kind === 'dry' && <>🔎 מתוך <b>{result.requested}</b> שנבחרו, <b>{result.currently_followed}</b> במעקב עכשio ({result.not_followed} כבר לא).</>}
+          {result.kind === 'error' && <>Error: {result.msg}</>}
+          {result.kind === 'dry' && <>🔎 Of <b>{result.requested}</b> selected, <b>{result.currently_followed}</b> still followed ({result.not_followed} already unfollowed).</>}
           {result.kind === 'unfollow' && (result.cancelled
-            ? <>⏹ בוטל — הוסרו <b>{result.unfollowed}</b> אמנים, נשארו {result.failed}.</>
-            : <>✅ הוסרו <b>{result.unfollowed}</b> אמנים{result.failed ? ` · ${result.failed} לא הוסרו` : ' — הכל הושלם 🎉'}.</>)}
-          {result.kind === 'undo' && <>↩ שוחזרו {result.refollowed} אמנים.</>}
+            ? <>⏹ Cancelled — removed <b>{result.unfollowed}</b>, {result.failed} remaining.</>
+            : <>✅ Removed <b>{result.unfollowed}</b> artist{result.unfollowed === 1 ? '' : 's'}{result.failed ? ` · ${result.failed} not removed` : ' — all done 🎉'}.</>)}
+          {result.kind === 'undo' && <>↩ Restored {result.refollowed} artist{result.refollowed === 1 ? '' : 's'}.</>}
         </div>
       )}
 
@@ -215,11 +215,11 @@ export const Cleanup: React.FC = () => {
           <div className="flex items-center justify-between text-sm mb-2">
             <span>
               {progress.wait > 0
-                ? <>⏳ ספוטיפיי מגביל קצב — ממתין <b>{progress.wait}</b> ש׳ וממשיך… <span className="text-zinc-500">({progress.done}/{progress.total} הוסרו)</span></>
-                : <>מסיר… <b className="text-emerald-400">{progress.done}</b> מתוך {progress.total}</>}
+                ? <>⏳ Spotify rate limit — waiting <b>{progress.wait}s</b>, then continuing… <span className="text-zinc-500">({progress.done}/{progress.total} removed)</span></>
+                : <>Removing… <b className="text-emerald-400">{progress.done}</b> of {progress.total}</>}
             </span>
             <button onClick={cancelUnfollow}
-              className="px-3 py-1 text-xs rounded bg-zinc-700 hover:bg-zinc-600">בטל</button>
+              className="px-3 py-1 text-xs rounded bg-zinc-700 hover:bg-zinc-600">Cancel</button>
           </div>
           <div className="h-2 rounded bg-zinc-700 overflow-hidden">
             <div className="h-full bg-emerald-500 transition-all duration-300"
@@ -244,11 +244,11 @@ export const Cleanup: React.FC = () => {
                 <div className="font-medium truncate">{c.artist}{isProt && <span className="ms-1 text-amber-400">🔒</span>}</div>
                 <div className="text-xs text-zinc-500 truncate">{c.genres || '—'}</div>
               </div>
-              <div className="text-xs text-zinc-500 hidden sm:block w-24 text-center">{(c.followers || 0).toLocaleString()} עוקבים</div>
-              <div className="text-sm text-center w-24"><b>{c.releases}</b> <span className="text-zinc-500">שחרורים</span></div>
+              <div className="text-xs text-zinc-500 hidden sm:block w-24 text-center">{(c.followers || 0).toLocaleString()} followers</div>
+              <div className="text-sm text-center w-24"><b>{c.releases}</b> <span className="text-zinc-500">releases</span></div>
               <span className={`text-xs text-white px-2 py-0.5 rounded ${tierColor[c.tier] || 'bg-zinc-600'}`}>{c.tier}</span>
               <button onClick={e => { e.stopPropagation(); toggleProtect(c.artist_uri, !isProt); }}
-                title={isProt ? 'בטל הגנה' : 'הגן מהסרה'}
+                title={isProt ? 'Unprotect' : 'Protect from removal'}
                 className={`text-lg w-8 text-center ${isProt ? 'text-amber-400' : 'text-zinc-500 hover:text-amber-400'}`}>
                 {isProt ? '🔒' : '🔓'}
               </button>
@@ -257,21 +257,21 @@ export const Cleanup: React.FC = () => {
             </div>
           );
         })}
-        {shown.length === 0 && <div className="text-center text-zinc-500 py-10">אין תוצאות לסינון הזה.</div>}
+        {shown.length === 0 && <div className="text-center text-zinc-500 py-10">No matches for this filter.</div>}
       </div>
 
       {/* sticky action bar */}
       <div className="fixed bottom-0 inset-x-0 z-20 bg-[#181818] border-t border-zinc-800 px-5 py-3 flex items-center gap-3">
-        <span className="text-sm"><b className="text-emerald-400">{selected.size}</b> נבחרו להסרה</span>
+        <span className="text-sm"><b className="text-emerald-400">{selected.size}</b> selected for removal</span>
         <div className="ms-auto flex gap-2">
           <button onClick={() => post('dry', '/api/cleanup/dry-run', { uris: Array.from(selected) })}
             disabled={!!busy || selected.size === 0}
             className="px-4 py-2 text-sm rounded bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40">
-            {busy === 'dry' ? 'בודק…' : 'הרצת יבש'}
+            {busy === 'dry' ? 'Checking…' : 'Dry run'}
           </button>
           <button onClick={() => setConfirmOpen(true)} disabled={!!busy || selected.size === 0}
             className="px-4 py-2 text-sm rounded bg-red-600 hover:bg-red-500 disabled:opacity-40 font-semibold">
-            {busy === 'unfollow' ? 'מסיר…' : `הסר ${selected.size} אמנים`}
+            {busy === 'unfollow' ? 'Removing…' : `Remove ${selected.size}`}
           </button>
         </div>
       </div>
@@ -280,13 +280,13 @@ export const Cleanup: React.FC = () => {
       {confirmOpen && (
         <div className="fixed inset-0 z-30 bg-black/70 flex items-center justify-center p-4" onClick={() => setConfirmOpen(false)}>
           <div className="bg-[#202020] rounded-lg p-6 max-w-md w-full" onClick={e => e.stopPropagation()}>
-            <h2 className="text-lg font-bold mb-2">לבטל מעקב אחרי {selected.size} אמנים?</h2>
+            <h2 className="text-lg font-bold mb-2">Remove {selected.size} artist{selected.size === 1 ? '' : 's'}?</h2>
             <p className="text-sm text-zinc-400 mb-4">
-              אפשר לשחזר בכל רגע עם "בטל הסרה אחרונה" — היא זוכרת בדיוק את מי שהוסר. ביטול מעקב לא מוחק שירים שאהבת או פלייליסטים.
+              This unfollows them on Spotify. You can restore them anytime with “Undo last removal” — it remembers exactly who was removed. Your liked songs and playlists are not affected.
             </p>
             <div className="flex justify-end gap-2">
-              <button onClick={() => setConfirmOpen(false)} className="px-4 py-2 text-sm rounded bg-zinc-700 hover:bg-zinc-600">ביטול</button>
-              <button onClick={doUnfollow} className="px-4 py-2 text-sm rounded bg-red-600 hover:bg-red-500 font-semibold">כן, הסר</button>
+              <button onClick={() => setConfirmOpen(false)} className="px-4 py-2 text-sm rounded bg-zinc-700 hover:bg-zinc-600">Cancel</button>
+              <button onClick={doUnfollow} className="px-4 py-2 text-sm rounded bg-red-600 hover:bg-red-500 font-semibold">Yes, remove</button>
             </div>
           </div>
         </div>

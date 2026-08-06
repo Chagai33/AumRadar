@@ -42,12 +42,13 @@ export const Cleanup: React.FC = () => {
   const [result, setResult] = useState<any>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  useEffect(() => {
-    axios.get('/api/cleanup/candidates')
-      .then(r => { setData(r.data); setProtectedSet(new Set(r.data.protected || [])); })
-      .catch(e => setErr(e.response?.data?.detail || e.message))
-      .finally(() => setLoading(false));
-  }, []);
+  const loadCandidates = async () => {
+    try {
+      const r = await axios.get('/api/cleanup/candidates');
+      setData(r.data); setProtectedSet(new Set(r.data.protected || []));
+    } catch (e: any) { setErr(e.response?.data?.detail || e.message); }
+  };
+  useEffect(() => { loadCandidates().finally(() => setLoading(false)); }, []);
 
   const fetchCount = async () => {
     setCountBusy(true);
@@ -170,7 +171,7 @@ export const Cleanup: React.FC = () => {
         <div className={`mx-5 mt-3 p-3 rounded text-sm ${result.kind === 'error' ? 'bg-red-900/40 text-red-300' : 'bg-zinc-800'}`}>
           {result.kind === 'error' && <>שגיאה: {result.msg}</>}
           {result.kind === 'dry' && <>🔎 מתוך <b>{result.requested}</b> שנבחרו, <b>{result.currently_followed}</b> במעקב עכשio ({result.not_followed} כבר לא).</>}
-          {result.kind === 'unfollow' && <>✅ הוסרו <b>{result.were_followed}</b> אמנים{result.not_followed ? ` (${result.not_followed} כבר לא היו במעקב)` : ''}{result.errors?.length ? ` · שגיאות: ${result.errors.length}` : ''}.</>}
+          {result.kind === 'unfollow' && <>✅ הוסרו <b>{result.unfollowed}</b> אמנים{result.failed ? ` · ${result.failed} נכשלו (הגבלת קצב — פשוט נסה שוב)` : ''}.</>}
           {result.kind === 'undo' && <>↩ שוחזרו {result.refollowed} אמנים.</>}
         </div>
       )}

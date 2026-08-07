@@ -2,145 +2,134 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 
-interface Playlist {
+interface PL {
   playlist_uri: string;
-  playlist_id: string;
   name: string;
-  owner_id: string;
-  owner_name: string;
   type: 'weekly' | 'outofplaylist' | 'other';
   week_number: number | null;
+  season: string | null;
+  legacy: boolean;
+  family: string | null;
   track_count: number;
   image: string | null;
   spotify_url: string;
   included: boolean;
   auto_included: boolean;
 }
-interface ReconResp {
+interface Resp {
   generated: string;
-  owner_id: string;
   total: number;
   counts: { weekly: number; outofplaylist: number; other: number };
   followed_count: number;
   included_count: number;
-  playlists: Playlist[];
+  playlists: PL[];
 }
 
-type TypeFilter = 'all' | 'weekly' | 'outofplaylist' | 'other';
+const TYPE_CLS: Record<string, string> = {
+  weekly: 'bg-emerald-800 text-emerald-200',
+  outofplaylist: 'bg-sky-800 text-sky-200',
+  other: 'bg-zinc-700 text-zinc-300',
+};
+const TYPE_LABEL: Record<string, string> = { weekly: 'weekly', outofplaylist: 'outof', other: 'other' };
 
-const typeLabel: Record<string, string> = {
-  weekly: 'Weekly', outofplaylist: 'Outofplaylist', other: 'Other',
+const FAM_ORDER = ['favorite', 'bestof', 'genre', 'event', 'listen', 'mood', 'trip', 'personal', 'dj', 'working', 'aggregator', 'uncategorized'];
+const FAM_LABEL: Record<string, string> = {
+  favorite: '⭐ Favorites', bestof: '🏆 Best-of', genre: '🎧 Genre', event: '🎉 Events',
+  listen: '💾 Listen / likes / Shazam', mood: '🧘 Mood / activity', trip: '✈️ Trips',
+  personal: '👤 Personal', dj: '🎛 DJ / sets', working: '🛠 Working lists',
+  aggregator: '🚫 Aggregators', uncategorized: '❓ Uncategorized',
 };
-const typeColor: Record<string, string> = {
-  weekly: 'bg-emerald-700', outofplaylist: 'bg-sky-700', other: 'bg-zinc-600',
-};
+const DANGER_FAM = new Set(['aggregator']);
+
+interface Top { key: string; label: string; by: 'season' | 'family'; match: (p: PL) => boolean; }
+const TOPS: Top[] = [
+  { key: 'weekly', label: '📅 Weekly', by: 'season', match: p => p.type === 'weekly' },
+  { key: 'outof', label: '🌓 Outofplaylist', by: 'season', match: p => p.type === 'outofplaylist' },
+  { key: 'collections', label: '🗂 Season collections', by: 'season', match: p => p.type === 'other' && !!p.season },
+  { key: 'other', label: '• Other / timeless', by: 'family', match: p => p.type === 'other' && !p.season },
+];
+
+const seasonOrder = (s: string) => (s === 'No season' ? 99 : parseInt(s.replace(/\D/g, '')) || 98);
 
 export const Recon: React.FC = () => {
-  const [data, setData] = useState<ReconResp | null>(null);
+  const [data, setData] = useState<PL[] | null>(null);
+  const [meta, setMeta] = useState<Resp | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
-  const [search, setSearch] = useState('');
   const [scanning, setScanning] = useState(false);
-  const [scanMsg, setScanMsg] = useState('');
+  const [q, setQ] = useState('');
+  const [subQ, setSubQ] = useState<Record<string, string>>({});
+  const [openTop, setOpenTop] = useState<Set<string>>(new Set(['weekly']));
+  const [openSub, setOpenSub] = useState<Set<string>>(new Set());
+  const [imgs, setImgs] = useState(false);
+  const [dir, setDir] = useState(1);
+  const [hideExc, setHideExc] = useState(false);
 
   const load = async () => {
     try {
       const r = await axios.get('/api/recon/playlists');
-      setData(r.data); setErr('');
+      setMeta(r.data); setData(r.data.playlists); setErr('');
     } catch (e: any) {
-      if (e.response?.status === 404) setData(null);   // no snapshot yet — show empty state
+      if (e.response?.status === 404) setData(null);
       else setErr(e.response?.data?.detail || e.message);
     }
   };
   useEffect(() => { load().finally(() => setLoading(false)); }, []);
 
   const rescan = async () => {
-    setScanning(true); setScanMsg(''); setErr('');
-    try {
-      const r = await axios.post('/api/recon/scan');
-      setScanMsg(`Scanned ${r.data.total} owned playlists · ${r.data.counts.weekly} weekly, ${r.data.counts.outofplaylist} outofplaylist, ${r.data.counts.other} other.`);
-      await load();
-    } catch (e: any) {
-      setErr(e.response?.data?.detail || e.message);
-    } finally { setScanning(false); }
+    setScanning(true); setErr('');
+    try { await axios.post('/api/recon/scan'); await load(); }
+    catch (e: any) { setErr(e.response?.data?.detail || e.message); }
+    finally { setScanning(false); }
   };
 
-  const setInclude = async (pl: Playlist, included: boolean) => {
-    if (pl.auto_included) return;
-    // optimistic
-    setData(prev => prev && ({
-      ...prev,
-      included_count: prev.included_count + (included ? 1 : -1),
-      playlists: prev.playlists.map(p => p.playlist_uri === pl.playlist_uri ? { ...p, included } : p),
-    }));
-    try {
-      await axios.post('/api/recon/include', { playlist_uri: pl.playlist_uri, included });
-    } catch {
-      // revert
-      setData(prev => prev && ({
-        ...prev,
-        included_count: prev.included_count + (included ? -1 : 1),
-        playlists: prev.playlists.map(p => p.playlist_uri === pl.playlist_uri ? { ...p, included: !included } : p),
-      }));
-    }
+  const patch = (uris: Set<string>, val: boolean) =>
+    setData(d => (d ? d.map(x => (uris.has(x.playlist_uri) ? { ...x, included: val } : x)) : d));
+
+  const setInc = async (p: PL, val: boolean) => {
+    patch(new Set([p.playlist_uri]), val);
+    try { await axios.post('/api/recon/include', { playlist_uri: p.playlist_uri, included: val }); }
+    catch { patch(new Set([p.playlist_uri]), !val); }
+  };
+  const setBulk = async (pls: PL[], val: boolean) => {
+    const uris = pls.map(p => p.playlist_uri);
+    patch(new Set(uris), val);
+    try { await axios.post('/api/recon/include-batch', { uris, included: val }); }
+    catch { load(); }
   };
 
-  const shown = useMemo(() => {
-    if (!data) return [];
-    const q = search.trim().toLowerCase();
-    return data.playlists.filter(p =>
-      (typeFilter === 'all' || p.type === typeFilter) &&
-      (!q || (p.name || '').toLowerCase().includes(q))
-    );
-  }, [data, typeFilter, search]);
+  const includedCount = useMemo(() => (data || []).filter(p => p.included).length, [data]);
+  const gVisible = (p: PL) => (!q || p.name.toLowerCase().includes(q.toLowerCase())) && (!hideExc || p.included);
+  const toggle = (set: Set<string>, key: string, upd: (s: Set<string>) => void) => {
+    const n = new Set(set); n.has(key) ? n.delete(key) : n.add(key); upd(n);
+  };
 
   if (loading) return <div className="min-h-screen bg-[#121212] text-zinc-300 flex items-center justify-center">Loading…</div>;
-  if (err) return (
-    <div className="min-h-screen bg-[#121212] text-red-400 flex flex-col items-center justify-center gap-4 p-6">
-      <div>Error: {err}</div>
-      <Link to="/dashboard" className="text-zinc-400 hover:text-white text-sm">← Dashboard</Link>
-    </div>
-  );
-
-  const counts = data?.counts;
-  const filters: { key: TypeFilter; label: string; n: number }[] = [
-    { key: 'all', label: 'All', n: data?.total || 0 },
-    { key: 'weekly', label: 'Weekly', n: counts?.weekly || 0 },
-    { key: 'outofplaylist', label: 'Outofplaylist', n: counts?.outofplaylist || 0 },
-    { key: 'other', label: 'Other', n: counts?.other || 0 },
-  ];
 
   return (
     <div className="min-h-screen bg-[#121212] text-zinc-200 pb-16">
-      {/* header */}
       <div className="sticky top-0 z-20 bg-[#181818] border-b border-zinc-800 px-5 py-3 flex flex-wrap items-center gap-3">
         <Link to="/dashboard" className="text-zinc-400 hover:text-white text-sm">← Dashboard</Link>
         <h1 className="text-lg font-bold">📋 Playlist Recon</h1>
         {data && (
           <span className="text-xs text-zinc-500">
-            {data.total} owned · <b className="text-emerald-400">{data.included_count}</b> feeding the engine
-            {data.followed_count ? <> · {data.followed_count} followed (not owned, excluded)</> : null}
-            {data.generated ? <> · scanned {data.generated}</> : null}
+            {data.length} owned · <b className="text-emerald-400">{includedCount}</b> feeding the engine
+            {meta?.followed_count ? ` · ${meta.followed_count} followed (excluded)` : ''}
           </span>
         )}
         <button onClick={rescan} disabled={scanning}
           className="ms-auto px-3 py-1.5 text-sm rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 font-semibold">
-          {scanning ? 'Scanning…' : data ? '↻ Rescan from Spotify' : 'Scan from Spotify'}
+          {scanning ? 'Scanning…' : data ? '↻ Rescan' : 'Scan from Spotify'}
         </button>
       </div>
 
-      {scanMsg && <div className="mx-5 mt-3 p-3 rounded bg-zinc-800 text-sm">✅ {scanMsg}</div>}
+      {err && <div className="mx-5 mt-3 p-3 rounded bg-red-900/40 text-red-300 text-sm">{err}</div>}
 
-      {/* empty state */}
-      {!data && (
-        <div className="flex flex-col items-center justify-center text-center gap-3 py-24 px-6">
+      {!data && !err && (
+        <div className="flex flex-col items-center gap-3 py-24 text-center px-6">
           <div className="text-4xl">📋</div>
           <h2 className="text-lg font-semibold">No snapshot yet</h2>
-          <p className="text-sm text-zinc-500 max-w-md">
-            Recon reads all the playlists you own from Spotify, sorts them into Weekly / Outofplaylist / Other,
-            and lets you pick which “Other” ones feed the engine. Nothing is changed on Spotify.
-          </p>
+          <p className="text-sm text-zinc-500 max-w-md">Recon reads your owned playlists and sorts them by type and season. Nothing changes on Spotify.</p>
           <button onClick={rescan} disabled={scanning}
             className="mt-2 px-4 py-2 text-sm rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 font-semibold">
             {scanning ? 'Scanning…' : 'Scan from Spotify'}
@@ -150,56 +139,107 @@ export const Recon: React.FC = () => {
 
       {data && (
         <>
-          {/* toolbar */}
-          <div className="px-5 py-3 flex flex-wrap items-center gap-2 border-b border-zinc-800">
-            {filters.map(f => (
-              <button key={f.key} onClick={() => setTypeFilter(f.key)}
-                className={`px-2.5 py-1 text-xs rounded ${typeFilter === f.key ? 'bg-white text-black' : 'bg-zinc-800'}`}>
-                {f.label} <span className="opacity-60">({f.n})</span>
-              </button>
-            ))}
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search name…"
-              className="ms-2 px-3 py-1 text-sm bg-zinc-800 rounded outline-none w-52" />
+          <div className="px-5 py-3 border-b border-zinc-800 space-y-2">
+            <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search all playlists…"
+              className="w-full px-3 py-2 text-sm bg-zinc-800 rounded outline-none" />
+            <div className="flex gap-2 flex-wrap">
+              <button onClick={() => setImgs(v => !v)}
+                className={`px-3 py-1 text-xs rounded border ${imgs ? 'bg-emerald-900/40 border-emerald-700 text-emerald-300' : 'bg-zinc-800 border-transparent text-zinc-400'}`}>🖼 Images {imgs ? 'on' : 'off'}</button>
+              <button onClick={() => setDir(d => -d)} className="px-3 py-1 text-xs rounded bg-zinc-800 text-zinc-400">↕ Week {dir > 0 ? '↑' : '↓'}</button>
+              <button onClick={() => setHideExc(v => !v)}
+                className={`px-3 py-1 text-xs rounded border ${hideExc ? 'bg-emerald-900/40 border-emerald-700 text-emerald-300' : 'bg-zinc-800 border-transparent text-zinc-400'}`}>🙈 Hide excluded</button>
+            </div>
           </div>
 
-          {/* list */}
-          <div className="px-3 sm:px-5 mt-3">
-            {shown.map(p => (
-              <div key={p.playlist_uri}
-                className="flex items-center gap-3 p-2 rounded border border-transparent hover:bg-zinc-800/60">
-                {p.image
-                  ? <img src={p.image} alt="" className="w-10 h-10 rounded object-cover" />
-                  : <div className="w-10 h-10 rounded bg-zinc-700" />}
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium truncate">{p.name || '(untitled)'}</div>
-                  <div className="text-xs text-zinc-500 truncate">
-                    {p.week_number != null ? `Week #${p.week_number} · ` : ''}{p.track_count} tracks
+          <div className="px-3 sm:px-5 mt-3 space-y-2">
+            {TOPS.map(top => {
+              const all = data.filter(top.match);
+              if (all.length === 0) return null;
+              if ((q || hideExc) && !all.some(gVisible)) return null;
+              const inc = all.filter(p => p.included).length;
+              const topOpen = q ? true : openTop.has(top.key);
+
+              const groupsMap: Record<string, PL[]> = {};
+              all.forEach(p => {
+                const k = top.by === 'season' ? (p.season || 'No season') : (p.family || 'uncategorized');
+                if (!groupsMap[k]) groupsMap[k] = [];
+                groupsMap[k].push(p);
+              });
+              const subKeys = Object.keys(groupsMap).sort((a, b) =>
+                top.by === 'season' ? seasonOrder(a) - seasonOrder(b) : FAM_ORDER.indexOf(a) - FAM_ORDER.indexOf(b));
+
+              return (
+                <div key={top.key} className="rounded-lg border border-zinc-800 bg-[#181818] overflow-hidden">
+                  <div onClick={() => toggle(openTop, top.key, setOpenTop)}
+                    className="flex items-center gap-2 px-3 py-2.5 cursor-pointer hover:bg-zinc-800/60">
+                    <span className="text-zinc-500 w-3">{topOpen ? '▾' : '▸'}</span>
+                    <span className="font-medium">{top.label}</span>
+                    <span className="text-xs text-zinc-500">{all.length}</span>
+                    <span className={`ms-auto text-xs px-2 py-0.5 rounded ${inc > 0 ? 'bg-emerald-900/50 text-emerald-300' : 'bg-zinc-800 text-zinc-500'}`}>{inc} in</span>
+                    <button onClick={e => { e.stopPropagation(); setBulk(all, true); }} className="text-xs px-2 py-0.5 rounded bg-zinc-800 hover:bg-emerald-800">Include all</button>
+                    <button onClick={e => { e.stopPropagation(); setBulk(all, false); }} className="text-xs px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700">Exclude all</button>
                   </div>
+
+                  {topOpen && subKeys.map(sk => {
+                    const subKey = `${top.key}|${sk}`;
+                    const full = groupsMap[sk];
+                    const scoped = subQ[subKey] || '';
+                    let leaves = full.filter(gVisible);
+                    if (scoped) leaves = leaves.filter(p => p.name.toLowerCase().includes(scoped.toLowerCase()));
+                    if ((q || hideExc || scoped) && leaves.length === 0) return null;
+                    leaves = [...leaves].sort((a, b) =>
+                      (top.by === 'season' && top.key !== 'collections')
+                        ? ((a.week_number || 0) - (b.week_number || 0)) * dir
+                        : b.track_count - a.track_count);
+                    const subInc = full.filter(p => p.included).length;
+                    const subOpen = q || scoped ? true : openSub.has(subKey);
+                    const danger = top.by === 'family' && DANGER_FAM.has(sk);
+                    const label = top.by === 'season' ? sk : (FAM_LABEL[sk] || sk);
+
+                    return (
+                      <div key={subKey} className="border-t border-zinc-800">
+                        <div onClick={() => toggle(openSub, subKey, setOpenSub)}
+                          className="flex items-center gap-2 pl-8 pr-3 py-2 cursor-pointer hover:bg-zinc-800/40">
+                          <span className="text-zinc-600 text-xs w-3">{subOpen ? '▾' : '▸'}</span>
+                          <span className={`text-sm ${danger ? 'text-red-300' : ''}`}>{label}</span>
+                          <span className="text-xs text-zinc-500">{full.length}</span>
+                          {danger && <span className="text-[10px] px-1.5 py-0.5 rounded bg-red-900/50 text-red-300">exclude</span>}
+                          <span className={`ms-auto text-xs px-2 py-0.5 rounded ${subInc > 0 ? 'bg-emerald-900/40 text-emerald-300' : 'text-zinc-600'}`}>{subInc} in</span>
+                          <button onClick={e => { e.stopPropagation(); setBulk(full, true); }} className="text-xs px-2 py-0.5 rounded bg-zinc-800 hover:bg-emerald-800">In</button>
+                          <button onClick={e => { e.stopPropagation(); setBulk(full, false); }} className="text-xs px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700">Out</button>
+                        </div>
+
+                        {subOpen && (
+                          <>
+                            <div className="pl-14 pr-3 py-1.5">
+                              <input value={scoped} onChange={e => setSubQ(s => ({ ...s, [subKey]: e.target.value }))}
+                                placeholder={`Search in ${label}…`} className="w-56 px-2 py-1 text-xs bg-zinc-800 rounded outline-none" />
+                            </div>
+                            {leaves.map(p => (
+                              <div key={p.playlist_uri} className="flex items-center gap-2.5 pl-14 pr-3 py-1.5 border-t border-zinc-900 hover:bg-zinc-800/30">
+                                <input type="checkbox" checked={p.included} onChange={e => setInc(p, e.target.checked)} className="w-4 h-4 accent-emerald-500" />
+                                {imgs && (p.image
+                                  ? <img src={p.image} alt="" className="w-8 h-8 rounded object-cover" />
+                                  : <div className="w-8 h-8 rounded bg-zinc-700" />)}
+                                <span className="flex-1 min-w-0 truncate text-sm">
+                                  {p.name}
+                                  {p.legacy && <span className="ms-1 text-[10px] px-1 rounded bg-amber-900/50 text-amber-300">legacy</span>}
+                                </span>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${TYPE_CLS[p.type]}`}>
+                                  {p.week_number != null ? `#${p.week_number}` : TYPE_LABEL[p.type]}
+                                </span>
+                                <span className="text-[11px] text-zinc-600 w-16 text-right">{p.track_count.toLocaleString()} tr</span>
+                                <a href={p.spotify_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-emerald-500 text-xs">↗</a>
+                              </div>
+                            ))}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-                <span className={`text-xs text-white px-2 py-0.5 rounded ${typeColor[p.type]}`}>{typeLabel[p.type]}</span>
-
-                {/* inclusion control */}
-                {p.auto_included ? (
-                  <span className="text-xs text-emerald-400 w-32 text-center" title="Weekly & Outofplaylist always feed the engine">
-                    🔒 auto-included
-                  </span>
-                ) : (
-                  <label className="flex items-center gap-2 w-32 justify-center cursor-pointer text-xs select-none"
-                    title="Include this playlist in the engine's scoring">
-                    <input type="checkbox" checked={p.included}
-                      onChange={e => setInclude(p, e.target.checked)}
-                      className="w-4 h-4 accent-emerald-500" />
-                    <span className={p.included ? 'text-emerald-400' : 'text-zinc-500'}>
-                      {p.included ? 'included' : 'include'}
-                    </span>
-                  </label>
-                )}
-
-                <a href={p.spotify_url} target="_blank" rel="noreferrer"
-                  className="text-xs text-emerald-400 hover:underline w-16 text-center">Spotify ↗</a>
-              </div>
-            ))}
-            {shown.length === 0 && <div className="text-center text-zinc-500 py-10">No matches for this filter.</div>}
+              );
+            })}
           </div>
         </>
       )}

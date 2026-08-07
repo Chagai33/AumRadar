@@ -651,6 +651,9 @@ export const Dashboard: React.FC = () => {
                     <Link to="/recon" className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] text-lg leading-none" title="Playlist Recon">
                         📋
                     </Link>
+                    <Link to="/bootstrap" className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] text-lg leading-none" title="Artist Bootstrap — build RANK scores">
+                        ⚖️
+                    </Link>
                     <Link to="/cleanup" className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] text-lg leading-none" title="Artist Cleanup">
                         🧹
                     </Link>

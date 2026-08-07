@@ -51,7 +51,7 @@ class AutomationManager:
     def load_tokens(self):
         return storage.load_json(TOKENS_FILE)
 
-    def get_headless_client(self):
+    def get_headless_client(self, see_rate_limits=False):
         """
         Constructs a Spotify client whose USER token auto-refreshes on expiry.
 
@@ -63,6 +63,12 @@ class AutomationManager:
         NOTE: the scope MUST match the one the login granted (app_settings.SCOPE),
         or validate_token() treats the cached token as invalid and falls into the
         interactive auth flow — which cannot work headless.
+
+        see_rate_limits: when True, disable spotipy's internal retry and exclude 429
+        from status_forcelist so a rate-limit RAISES immediately WITH the Retry-After
+        header intact (same trick as the scan/session clients). Bootstrap needs this
+        to run its own sleep-with-heartbeat instead of letting urllib3 block silently
+        on a long Retry-After. The scan Job keeps the default (auto-retry) behaviour.
         """
         if not self.load_tokens():
             raise Exception("No automation tokens found. Please run a manual scan first to authorize.")
@@ -76,6 +82,14 @@ class AutomationManager:
             open_browser=False,       # never pop a browser in a headless Job
             requests_timeout=20,      # bound the token-refresh POST (else defaults to None = unbounded)
         )
+        if see_rate_limits:
+            return Spotify(
+                auth_manager=sp_oauth,
+                requests_timeout=20,
+                retries=0,
+                status_retries=0,
+                status_forcelist=(500, 502, 503, 504),  # 429 excluded → header survives
+            )
         return Spotify(auth_manager=sp_oauth)
 
     def should_run_now(self):

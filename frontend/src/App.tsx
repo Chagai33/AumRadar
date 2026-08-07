@@ -5,6 +5,7 @@ import { Login } from './pages/Login';
 import { Dashboard } from './pages/Dashboard';
 import { Cleanup } from './pages/Cleanup';
 import { Recon } from './pages/Recon';
+import { Bootstrap } from './pages/Bootstrap';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const logoVariants = {
@@ -93,6 +94,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Recon />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/bootstrap"
+              element={
+                <ProtectedRoute>
+                  <Bootstrap />
                 </ProtectedRoute>
               }
             />

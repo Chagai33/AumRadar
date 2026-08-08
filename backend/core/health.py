@@ -12,9 +12,10 @@ artist call then just re-runs the pure `score_songs` over that in-memory dict (<
 ~8k songs). The only GCS touch on the hot path is a cheap metadata HEAD to notice when
 Bootstrap (a separate Job) rewrote the file — then, and only then, we re-download.
 
-Stage 3א is BACKEND ONLY and scores RAW (the manual-override layer is applied at the
-single seam `_effective`, a no-op until Stage 3ג wires it in — STAGE3.md §10.1). The
-dashboard is 3ב; the rich manual layer is 3ג.
+The manual-override layer (Stage 3ג) is applied at the single seam `_resolve`:
+score_floor lifts the effective rank, disposition:remove forces 🔴 + always-candidate,
+and protect / an active pin keep an artist out of candidates — so preview / ranked /
+artist / apply are all override-aware in one place (STAGE3.md §10.5 / §12.4 / §13.3).
 """
 import threading
 import datetime
@@ -99,6 +100,8 @@ class HealthEngine:
         self._followed_stamp = None
         self._pl_meta = None               # {playlist_uri: {name,type,week_number,spotify_url}}
         self._pl_stamp = None
+        self._manual_cache = None          # {artist_uri: override record} — soft-prune: never auto-deleted
+        self._manual_stamp = None
 
     # ─────────────────────────── cache management ──────────────────────────
     @staticmethod
@@ -164,14 +167,59 @@ class HealthEngine:
         self._pl_stamp = stamp
         return self._pl_meta
 
-    # ─────────────────────────── manual-layer seam ─────────────────────────
-    def _effective(self, uri: str, raw: float) -> float:
-        """The RANK used for banding/counting/placing. Stage 3א = raw (STAGE3.md §10.1:
-        '3א gives the raw _score; extended when 3ג is built'). Stage 3ג wires the manual
-        overrides in HERE — score_floor lifts it (max(raw, floor); §10.5),
-        disposition:remove forces it to 🔴 (§13.3), protect keeps it out of candidates —
-        so preview/ranked/apply all become effective-aware at this one seam."""
-        return raw
+    # ─────────────────────────── manual-layer (3ג) ─────────────────────────
+    def _manual(self) -> dict:
+        """The manual-override map, mtime-cached. Soft-prune is applied by the callers,
+        which only ever iterate FOLLOWED artists — a non-followed record simply never
+        shows; it is NEVER physically deleted here (§12.2)."""
+        stamp = self._stamp(manual_store.MANUAL_FILE)
+        if self._manual_cache is not None and stamp == self._manual_stamp:
+            return self._manual_cache
+        self._manual_cache = manual_store.load()
+        self._manual_stamp = stamp
+        return self._manual_cache
+
+    @staticmethod
+    def _pin_active(pinned_until) -> bool:
+        """True while a pin is still in the future (ISO YYYY-MM-DD compare lexically)."""
+        if not pinned_until:
+            return False
+        try:
+            return str(pinned_until)[:10] > datetime.date.today().isoformat()
+        except Exception:
+            return False
+
+    @staticmethod
+    def _pin_expired(pinned_until) -> bool:
+        if not pinned_until:
+            return False
+        try:
+            return str(pinned_until)[:10] <= datetime.date.today().isoformat()
+        except Exception:
+            return False
+
+    def _resolve(self, raw: float, bands, cand_bands, rec: dict) -> dict:
+        """Fold the manual override onto a raw RANK → what the UI shows and what apply
+        writes. Precedence (STAGE3.md §10.5/§12.4/§13.3):
+          • score_floor LIFTS the effective rank (max(raw, floor)) — protects, never fakes.
+          • disposition 'remove'  → forced 🔴 AND always a candidate (overrides the floor).
+          • disposition 'protect' or an ACTIVE pin → never a candidate (placed by eff).
+          • else → normal banding; candidate iff its band is a chosen candidate band."""
+        disp = rec.get("disposition") or "none"
+        floor = rec.get("score_floor")
+        eff, raised = raw, False
+        if isinstance(floor, (int, float)) and floor > raw:
+            eff, raised = float(floor), True
+        pinned = self._pin_active(rec.get("pinned_until"))
+        if disp == "remove":
+            return {"effective": eff, "band": "red", "candidate": True,
+                    "disposition": disp, "raised": raised, "pinned": pinned}
+        band = band_of(eff, bands)
+        if disp == "protect" or pinned:
+            return {"effective": eff, "band": band, "candidate": False,
+                    "disposition": disp, "raised": raised, "pinned": pinned}
+        return {"effective": eff, "band": band, "candidate": band in cand_bands,
+                "disposition": disp, "raised": raised, "pinned": pinned}
 
     @staticmethod
     def _half_life(w) -> float:
@@ -199,19 +247,22 @@ class HealthEngine:
         self._ensure_songs()
         scores = self._score(w)
         followed = self._followed_map()
+        manual = self._manual()
         bands = w.safe_bands()
         cand_bands = set(w.candidate_bands or [])
         counts = {b: 0 for b in BAND_NAMES}
-        candidates = 0
+        candidates = expired = 0
         for uri in followed:
-            eff = self._effective(uri, scores.get(uri, {}).get("rank", 0.0))
-            b = band_of(eff, bands)
-            counts[b] += 1
-            if b in cand_bands:
+            rec = manual.get(uri) or {}
+            r = self._resolve(scores.get(uri, {}).get("rank", 0.0), bands, cand_bands, rec)
+            counts[r["band"]] += 1
+            if r["candidate"]:
                 candidates += 1
+            if self._pin_expired(rec.get("pinned_until")):
+                expired += 1
         return {"counts": counts, "candidates": candidates, "followed": len(followed),
                 "current_week": self._current_week, "generated": self._songs_generated,
-                "bands": bands}
+                "bands": bands, "expired_locks": expired}
 
     def ranked(self, w, offset: int = 0, limit: int = 100,
                band: Optional[str] = None) -> dict:
@@ -222,26 +273,32 @@ class HealthEngine:
         self._ensure_songs()
         scores = self._score(w)
         followed = self._followed_map()
+        manual = self._manual()
         bands = w.safe_bands()
+        cand_bands = set(w.candidate_bands or [])
         rows = []
         for uri, art in followed.items():
             sc = scores.get(uri)
             raw = sc["rank"] if sc else 0.0
             entered = sc["entered"] if sc else 0
-            eff = self._effective(uri, raw)
-            b = band_of(eff, bands)
-            if band and b != band:
+            rec = manual.get(uri) or {}
+            r = self._resolve(raw, bands, cand_bands, rec)
+            if band == "expired":                            # the "locks expired" queue (§12.5)
+                if not self._pin_expired(rec.get("pinned_until")):
+                    continue
+            elif band and r["band"] != band:
                 continue
-            rows.append((uri, art, raw, eff, entered, b))
-        rows.sort(key=lambda r: r[3], reverse=True)         # by effective rank
+            rows.append((uri, art, raw, r, entered))
+        rows.sort(key=lambda x: x[3]["effective"], reverse=True)     # by effective rank
         total = len(rows)
         offset = max(0, offset)
         page = rows[offset:offset + max(1, limit)]
         out = []
-        for uri, art, raw, eff, entered, b in page:
+        for uri, art, raw, r, entered in page:
             row = bootstrap._candidate_row(uri, art)
-            row.update({"rank": round(eff, 6), "raw_rank": round(raw, 6),
-                        "entered": entered, "band": b})
+            row.update({"rank": round(r["effective"], 6), "raw_rank": round(raw, 6),
+                        "entered": entered, "band": r["band"], "disposition": r["disposition"],
+                        "raised": r["raised"], "pinned": r["pinned"]})
             out.append(row)
         return {"total": total, "offset": offset, "limit": limit,
                 "count": len(out), "rows": out}
@@ -297,18 +354,20 @@ class HealthEngine:
                 raw += best_contrib
                 entered += 1
         songs_out.sort(key=lambda r: r["contribution"], reverse=True)
-        eff = self._effective(uri, raw)
+        rec = self._manual().get(uri) or {}
+        r = self._resolve(raw, bands, set(w.candidate_bands or []), rec)
         base = bootstrap._candidate_row(uri, art)                # safe even when art == {}
         return {
             **{k: base[k] for k in ("artist_uri", "artist_id", "artist", "image",
                                     "genres", "followers", "spotify_url")},
             "followed": uri in followed,
-            "rank": round(raw, 6), "effective_rank": round(eff, 6),
-            "band": band_of(eff, bands), "entered": entered,
+            "rank": round(raw, 6), "effective_rank": round(r["effective"], 6),
+            "band": r["band"], "candidate": r["candidate"], "entered": entered,
+            "disposition": r["disposition"], "raised": r["raised"], "pinned": r["pinned"],
             "songs": songs_out,
             "playlists": sorted(playlists.values(),
                                 key=lambda p: (p.get("week_number") or 0), reverse=True),
-            "manual": manual_store.get(uri),
+            "manual": rec,
         }
 
     def apply(self, w) -> dict:
@@ -321,10 +380,11 @@ class HealthEngine:
         followed = self._followed_map()
         bands = w.safe_bands()
         cand_bands = set(w.candidate_bands or ["red"])
+        manual = self._manual()
         candidates = [bootstrap._candidate_row(uri, art)
                       for uri, art in followed.items()
-                      if band_of(self._effective(uri, scores.get(uri, {}).get("rank", 0.0)),
-                                 bands) in cand_bands]
+                      if self._resolve(scores.get(uri, {}).get("rank", 0.0), bands,
+                                       cand_bands, manual.get(uri) or {})["candidate"]]
 
         existing = storage.load_json(CANDIDATES_FILE)
         backup = None

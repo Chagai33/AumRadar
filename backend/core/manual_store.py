@@ -19,7 +19,7 @@ Conflict resolution (protect-wins) and soft-prune (ignore non-followed records i
 memory but NEVER auto-delete them) are READ-time concerns applied when the overrides
 are consumed — this module only stores what it is given.
 """
-from typing import Optional
+import datetime
 
 from .storage_manager import storage
 
@@ -64,3 +64,21 @@ def update(uri: str, fields: dict) -> dict:
     if not storage.save_json(MANUAL_FILE, data):
         raise RuntimeError("could not save artist_manual.json")
     return rec
+
+
+def pin_active(pinned_until) -> bool:
+    """True while a pin is still in the future (ISO YYYY-MM-DD compare lexically)."""
+    if not pinned_until:
+        return False
+    try:
+        return str(pinned_until)[:10] > datetime.date.today().isoformat()
+    except Exception:
+        return False
+
+
+def protected_uris() -> set:
+    """Artists that must NEVER be cleanup candidates — disposition 'protect' or an
+    ACTIVE pin. Shared by /cleanup (read-time live-filter, §13.1) and bulk-unfollow so a
+    favourite/pinned artist can't be removed even if a stale list still lists them."""
+    return {u for u, r in load().items()
+            if (r or {}).get("disposition") == "protect" or pin_active((r or {}).get("pinned_until"))}

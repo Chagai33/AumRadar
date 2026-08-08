@@ -19,6 +19,7 @@ import datetime
 
 from .auth import get_spotify_client
 from ..core.storage_manager import storage
+from ..core import manual_store
 
 router = APIRouter()
 
@@ -81,26 +82,42 @@ def _following_flags(sp, ids: List[str]) -> List[bool]:
 
 
 def _load_protected() -> set:
-    return set(storage.load_json(PROTECTED_FILE, default=[]) or [])
+    """Protected/pinned artists from the single manual store (§11.3)."""
+    return manual_store.protected_uris()
 
 
-def _save_protected(uris: set):
-    storage.save_json(PROTECTED_FILE, sorted(uris))
+def _migrate_protected_once():
+    """One-time: fold the legacy protected.json (the old 🔒 list) into artist_manual.json
+    as disposition:'protect', back it up, then delete it — so there is ONE source of truth
+    (§11.3). Idempotent: once the file is gone this is a single exists() check."""
+    if not storage.exists(PROTECTED_FILE):
+        return
+    old = storage.load_json(PROTECTED_FILE, default=[]) or []
+    if old:
+        storage.save_json(f"{CLEANUP_DIR}/protected_migrated_{_ts()}.json", list(old))
+        for uri in old:
+            try:
+                manual_store.update(uri, {"disposition": "protect"})
+            except Exception:
+                pass
+    storage.delete_file(PROTECTED_FILE)
 
 
 @router.get("/cleanup/candidates")
 def get_candidates(request: Request):
-    """Serve candidates filtered to those the user STILL follows (self-healing) —
-    already-unfollowed artists drop off; protected ones stay (flagged in the UI)."""
+    """Serve candidates filtered to those the user STILL follows AND hasn't protected /
+    pinned — both are live read-time filters (self-healing), so a favourite marked in the
+    Health dashboard drops off here immediately, without a re-Apply (§13.1)."""
+    _migrate_protected_once()
     data = storage.load_json(CANDIDATES_FILE, default=None)
     if data is None:
         raise HTTPException(404, "No candidates file found.")
     cands = data.get("candidates", [])
     sp = get_spotify_client(request)
+    protected = _load_protected()
     flags = _following_flags(sp, [c["artist_id"] for c in cands])
-    live = [c for c, f in zip(cands, flags) if f]
-    return {**data, "candidates": live, "count": len(live),
-            "protected": sorted(_load_protected())}
+    live = [c for c, f in zip(cands, flags) if f and c.get("artist_uri") not in protected]
+    return {**data, "candidates": live, "count": len(live), "protected": sorted(protected)}
 
 
 @router.post("/cleanup/dry-run")
@@ -122,6 +139,7 @@ def unfollow(request: Request, body: UnfollowReq):
     accumulates across resumes; and returns what's left + how long Spotify asked us to
     wait (retry_after) so the client resumes automatically with a live progress bar."""
     sp = get_spotify_client(request)
+    _migrate_protected_once()
     queue = [u for u in dict.fromkeys(body.uris) if u]
     protected = _load_protected()
     queue = [u for u in queue if u not in protected]
@@ -194,12 +212,12 @@ def undo(request: Request, body: UndoReq):
 
 @router.post("/cleanup/protect")
 def protect(request: Request, body: ProtectReq):
-    """Mark an artist protected (never removable), or unprotect it."""
+    """Mark an artist protected (never removable), or unprotect it — writes through the
+    shared manual store as disposition 'protect' / 'none' (§11.3 / §13.4)."""
     get_spotify_client(request)  # session-gate
-    p = _load_protected()
-    p.add(body.uri) if body.protected else p.discard(body.uri)
-    _save_protected(p)
-    return {"uri": body.uri, "protected": body.protected, "protected_count": len(p)}
+    _migrate_protected_once()
+    manual_store.update(body.uri, {"disposition": "protect" if body.protected else "none"})
+    return {"uri": body.uri, "protected": body.protected, "protected_count": len(_load_protected())}
 
 
 @router.get("/cleanup/latest-manifest")

@@ -93,7 +93,7 @@ export const Cleanup: React.FC = () => {
   const toggleProtect = async (uri: string, makeProtected: boolean) => {
     setProtectedSet(prev => { const n = new Set(prev); makeProtected ? n.add(uri) : n.delete(uri); return n; });
     if (makeProtected) setSelected(prev => { const n = new Set(prev); n.delete(uri); return n; });
-    try { await axios.post('/api/cleanup/protect', { uri, protected: makeProtected }); }
+    try { await axios.post('/api/cleanup/protect', { uri, protected: makeProtected }); await loadCandidates(); }
     catch { setProtectedSet(prev => { const n = new Set(prev); makeProtected ? n.delete(uri) : n.add(uri); return n; }); }
   };
 

@@ -15,12 +15,12 @@ interface Weights {
 }
 interface Preview {
   counts: Record<string, number>; candidates: number; followed: number;
-  current_week: number; generated: string; bands: number[];
+  current_week: number; generated: string; bands: number[]; expired_locks: number;
 }
 interface Row {
   artist_uri: string; artist_id: string; artist: string; image: string; genres: string;
   followers: number; rank: number; raw_rank: number; entered: number; band: string;
-  spotify_url: string;
+  spotify_url: string; raised?: boolean; pinned?: boolean; disposition?: string;
 }
 interface Ranked { total: number; offset: number; limit: number; count: number; rows: Row[]; }
 interface Song {
@@ -33,8 +33,9 @@ interface Why {
   artist_uri: string; artist_id: string; artist: string; image: string; genres: string;
   followers: number; spotify_url: string; followed: boolean; rank: number;
   effective_rank: number; band: string; entered: number; songs: Song[]; playlists: Playlist[];
-  manual: Record<string, any>;
+  manual: Record<string, any>; disposition?: string; raised?: boolean; pinned?: boolean; candidate?: boolean;
 }
+interface Manual { disposition?: string; score_floor?: number; pinned_until?: string; notes?: string; tags?: string[]; }
 
 const DEFAULTS: Weights = {
   half_life: 26, weekly: 1, outof: 0.05, other: 0.05, legacy: 0.5,
@@ -95,6 +96,7 @@ export const Health: React.FC = () => {
   const [applying, setApplying] = useState(false);
   const [applyRes, setApplyRes] = useState<any>(null);
   const [manifestOpen, setManifestOpen] = useState(false);
+  const [tick, setTick] = useState(0);   // bump to force a preview/ranked refresh after a manual save
   const firstLoad = useRef(true);
 
   // Load the last-applied knobs + a soft "active cleanup" flag, then the debounced
@@ -129,7 +131,7 @@ export const Health: React.FC = () => {
       setLoading(false); firstLoad.current = false;
     }, firstLoad.current ? 0 : 300);
     return () => clearTimeout(t);
-  }, [weights, openBand, page]);
+  }, [weights, openBand, page, tick]);
 
   const setKnob = (k: keyof Weights, v: number) => setWeights(w => ({ ...w, [k]: v }));
   const setBand = (i: number, v: number) => setWeights(w => { const b = [...w.bands]; b[i] = v; return { ...w, bands: b }; });
@@ -156,6 +158,9 @@ export const Health: React.FC = () => {
     catch (e: any) { setErr(e.response?.data?.detail || e.message); }
     finally { setWhyBusy(false); }
   };
+  // after saving an override: refresh the counts/list (tick) and re-open the artist so
+  // its effective rank / band / badges reflect the change immediately.
+  const onManualSaved = () => { setTick(t => t + 1); if (why) openWhy(why.artist_id); };
 
   const apply = async () => {
     setApplying(true); setApplyRes(null);
@@ -218,6 +223,14 @@ export const Health: React.FC = () => {
             </div>
           </div>
 
+          {/* expired-locks queue (§12.5) */}
+          {preview && preview.expired_locks > 0 && (
+            <button onClick={() => { setPage(0); setOpenBand('expired'); }}
+              className="w-full text-left px-4 py-2.5 rounded-xl border border-amber-500/40 bg-amber-900/15 text-amber-200 text-sm hover:bg-amber-900/25">
+              🔒 <b>{preview.expired_locks}</b> lock{preview.expired_locks === 1 ? '' : 's'} expired — click to re-review
+            </button>
+          )}
+
           {/* bands */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {BANDS.map(b => {
@@ -269,7 +282,9 @@ export const Health: React.FC = () => {
             <div className="bg-[#181818] border border-zinc-800 rounded-xl overflow-hidden">
               <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800">
                 <span className="text-sm font-semibold">
-                  {BANDS.find(b => b.key === openBand)?.emoji} {BANDS.find(b => b.key === openBand)?.label}
+                  {openBand === 'expired'
+                    ? '🔒 Expired locks'
+                    : `${BANDS.find(b => b.key === openBand)?.emoji ?? ''} ${BANDS.find(b => b.key === openBand)?.label ?? ''}`}
                 </span>
                 <span className="text-xs text-zinc-500">{ranked?.total?.toLocaleString() ?? 0} artists</span>
                 {rankedBusy && <span className="text-xs text-zinc-600">updating…</span>}
@@ -287,6 +302,12 @@ export const Health: React.FC = () => {
                     </div>
                     <div className="text-xs text-zinc-500 hidden sm:block w-24 text-center">{(r.followers || 0).toLocaleString()} followers</div>
                     <div className="text-sm text-center w-16"><b>{r.entered}</b> <span className="text-zinc-500 text-xs">songs</span></div>
+                    <span className="flex items-center gap-1 text-xs w-14 justify-end">
+                      {r.disposition === 'protect' && <span title="Protected">🛡️</span>}
+                      {r.disposition === 'remove' && <span title="Force-remove">🚫</span>}
+                      {r.pinned && <span title="Pinned">📌</span>}
+                      {r.raised && <span title="Score-floor raised">⬆️</span>}
+                    </span>
                     <span className={`text-xs text-white px-2 py-0.5 rounded ${chipOf[r.band]}`}>{fmt(r.rank)}</span>
                   </div>
                 ))}
@@ -346,7 +367,10 @@ export const Health: React.FC = () => {
                   </div>
                   <div className="text-right">
                     <span className={`text-white text-sm px-2 py-1 rounded ${chipOf[why.band]}`}>RANK {fmt(why.effective_rank)}</span>
-                    {why.effective_rank !== why.rank && <div className="text-[11px] text-zinc-500 mt-1">raw {fmt(why.rank)} → {fmt(why.effective_rank)} 🛡️</div>}
+                    {why.raised && <div className="text-[11px] text-zinc-500 mt-1">raw {fmt(why.rank)} → {fmt(why.effective_rank)} 🛡️</div>}
+                    {why.disposition === 'protect' && <div className="text-[11px] text-emerald-400 mt-1">🛡️ protected</div>}
+                    {why.disposition === 'remove' && <div className="text-[11px] text-red-400 mt-1">🚫 force-remove</div>}
+                    {why.pinned && <div className="text-[11px] text-amber-400 mt-1">📌 pinned</div>}
                     <div className="text-[11px] text-zinc-500 mt-1">{why.entered} songs counted</div>
                   </div>
                 </div>
@@ -383,6 +407,8 @@ export const Health: React.FC = () => {
                       </div>
                     </div>
                   )}
+
+                  <ManualEditor why={why} onSaved={onManualSaved} />
                 </div>
 
                 <div className="flex items-center gap-2 p-4 border-t border-zinc-800">
@@ -411,3 +437,86 @@ const Slider: React.FC<{ label: string; hint?: string; min: number; max: number;
       {hint && <div className="text-[11px] text-zinc-600 mt-0.5">{hint}</div>}
     </div>
   );
+
+const DISPOSITIONS = [
+  { key: 'protect', label: '🛡️ Protect', cls: 'bg-emerald-700' },
+  { key: 'none', label: 'None', cls: 'bg-zinc-600' },
+  { key: 'remove', label: '🚫 Remove', cls: 'bg-red-700' },
+];
+
+// Your overrides, BESIDE the algorithmic score (never rewriting it — DESIGN principle).
+// disposition is one exclusive intent; floor/pin/notes/tags are independent.
+const ManualEditor: React.FC<{ why: Why; onSaved: () => void }> = ({ why, onSaved }) => {
+  const m: Manual = why.manual || {};
+  const [disp, setDisp] = useState<string>(m.disposition || 'none');
+  const [floor, setFloor] = useState<string>(m.score_floor ? String(m.score_floor) : '');
+  const [pin, setPin] = useState<string>(m.pinned_until ? String(m.pinned_until).slice(0, 10) : '');
+  const [notes, setNotes] = useState<string>(m.notes || '');
+  const [tags, setTags] = useState<string>((m.tags || []).join(', '));
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {                                   // re-init when a different artist opens
+    const mm: Manual = why.manual || {};
+    setDisp(mm.disposition || 'none');
+    setFloor(mm.score_floor ? String(mm.score_floor) : '');
+    setPin(mm.pinned_until ? String(mm.pinned_until).slice(0, 10) : '');
+    setNotes(mm.notes || '');
+    setTags((mm.tags || []).join(', '));
+    setSaved(false);
+  }, [why.artist_uri]);
+
+  const save = async () => {
+    setBusy(true); setSaved(false);
+    try {
+      await axios.post('/api/health/manual', {
+        artist_uri: why.artist_uri,
+        disposition: disp,
+        score_floor: floor.trim() === '' ? 0 : Number(floor),
+        pinned_until: pin.trim(),                     // '' clears the pin
+        notes,
+        tags: tags.split(',').map(t => t.trim()).filter(Boolean),
+      });
+      setSaved(true);
+      onSaved();
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="border-t border-zinc-800 pt-4">
+      <div className="text-xs font-bold text-zinc-500 uppercase tracking-wide mb-2">Manual override</div>
+      <div className="flex gap-1.5 mb-3">
+        {DISPOSITIONS.map(d => (
+          <button key={d.key} onClick={() => setDisp(d.key)}
+            className={`px-3 py-1.5 text-sm rounded ${disp === d.key ? d.cls + ' text-white font-semibold' : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'}`}>
+            {d.label}
+          </button>
+        ))}
+      </div>
+      <div className="grid grid-cols-2 gap-3 mb-2">
+        <div>
+          <label className="text-[11px] text-zinc-500 block mb-1">Score floor (guaranteed min rank)</label>
+          <input value={floor} onChange={e => setFloor(e.target.value)} type="number" step="0.01" min="0" placeholder="none"
+            className="w-full px-2 py-1.5 text-sm bg-zinc-800 rounded outline-none focus:ring-1 focus:ring-emerald-600" />
+        </div>
+        <div>
+          <label className="text-[11px] text-zinc-500 block mb-1">Pinned until</label>
+          <input value={pin} onChange={e => setPin(e.target.value)} type="date"
+            className="w-full px-2 py-1.5 text-sm bg-zinc-800 rounded outline-none focus:ring-1 focus:ring-emerald-600" />
+        </div>
+      </div>
+      <input value={tags} onChange={e => setTags(e.target.value)} placeholder="tags (comma-separated)"
+        className="w-full px-2 py-1.5 text-sm bg-zinc-800 rounded outline-none mb-2 focus:ring-1 focus:ring-emerald-600" />
+      <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="notes…" rows={2}
+        className="w-full px-2 py-1.5 text-sm bg-zinc-800 rounded outline-none resize-none focus:ring-1 focus:ring-emerald-600" />
+      <div className="flex items-center gap-2 mt-2">
+        <button onClick={save} disabled={busy}
+          className="px-4 py-1.5 text-sm rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 font-semibold">
+          {busy ? 'Saving…' : 'Save override'}
+        </button>
+        {saved && <span className="text-xs text-emerald-400">✓ saved</span>}
+        <span className="text-[11px] text-zinc-600 ms-auto hidden sm:inline">the real score stays visible above — overrides never rewrite it</span>
+      </div>
+    </div>
+  );
+};

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
-import { LogOut, Search, Calendar, Play, ListMusic, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save, Layers, X, Check, Trash2 } from 'lucide-react';
+import { LogOut, Search, Calendar, Play, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save, Layers, X, Check, Trash2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
 
@@ -653,6 +653,9 @@ export const Dashboard: React.FC = () => {
                     </Link>
                     <Link to="/bootstrap" className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] text-lg leading-none" title="Artist Bootstrap — build RANK scores">
                         ⚖️
+                    </Link>
+                    <Link to="/health" className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] text-lg leading-none" title="Health Tuning — tune RANK & candidates live">
+                        🎛
                     </Link>
                     <Link to="/cleanup" className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] text-lg leading-none" title="Artist Cleanup">
                         🧹

@@ -101,6 +101,7 @@ export const Bootstrap: React.FC = () => {
         )}
         <div className="ms-auto flex items-center gap-2">
           <Link to="/recon" className="text-xs text-zinc-400 hover:text-white">📋 Recon</Link>
+          <Link to="/health" className="text-xs text-zinc-400 hover:text-white">🎛 Health</Link>
           <Link to="/cleanup" className="text-xs text-zinc-400 hover:text-white">🧹 Cleanup</Link>
         </div>
       </div>

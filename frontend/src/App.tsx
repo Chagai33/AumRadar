@@ -6,9 +6,10 @@ import { Dashboard } from './pages/Dashboard';
 import { Cleanup } from './pages/Cleanup';
 import { Recon } from './pages/Recon';
 import { Bootstrap } from './pages/Bootstrap';
-import { motion, AnimatePresence } from 'framer-motion';
+import { Health } from './pages/Health';
+import { motion, AnimatePresence, type Variants } from 'framer-motion';
 
-const logoVariants = {
+const logoVariants: Variants = {
   initial: { scale: 0.8, opacity: 0 },
   animate: {
     scale: 1,
@@ -102,6 +103,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Bootstrap />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/health"
+              element={
+                <ProtectedRoute>
+                  <Health />
                 </ProtectedRoute>
               }
             />

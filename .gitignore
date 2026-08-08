@@ -25,3 +25,5 @@ cache/cleanup/
 .env
 backend/.env
 follow_artists.py
+# spotipy OAuth token cache — holds a LIVE access_token + refresh_token
+.cache

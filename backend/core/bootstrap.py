@@ -33,6 +33,7 @@ CHECKPOINT_FILE = f"{CACHE_DIR}/bootstrap_checkpoint.json"
 STOP_REQUEST_FILE = f"{CACHE_DIR}/bootstrap_stop_request.json"
 CANDIDATES_FILE = f"{CACHE_DIR}/cleanup_candidates.json"   # consumed by /cleanup
 SCORES_FILE = f"{CACHE_DIR}/bootstrap_scores.json"         # full ranked list (observability)
+SONGS_FILE = f"{CACHE_DIR}/bootstrap_songs.json"           # raw per-ISRC fold — feeds Stage 3 live tuning
 
 # Recon (Stage 1) outputs that Bootstrap consumes — mirror routers/recon.py.
 RECON_SNAPSHOT_FILE = "cache/recon_playlists.json"
@@ -84,6 +85,51 @@ def _retry_after_seconds(e) -> Optional[int]:
 
 def _uri_to_id(uri: str) -> str:
     return uri.rsplit(":", 1)[-1] if uri else uri
+
+
+def score_songs(songs: dict, current_week: int,
+                half_life: float = HALF_LIFE_WEEKS,
+                type_weight: Optional[dict] = None,
+                legacy_mult: float = LEGACY_MULT,
+                default_type_weight: float = DEFAULT_TYPE_WEIGHT) -> dict:
+    """THE single RANK scorer (BOOTSTRAP.md §7) — shared by Bootstrap (locked
+    defaults) and the Stage-3 Health engine (live slider params; STAGE3.md §2/§4א.2).
+    Pure: no I/O, no instance state, so both callers score identically.
+
+    For each song take its STRONGEST placement (max contribution, NOT a sum of
+    duplicate placements — and WHICH placement wins can flip with the weights, e.g. a
+    fresh outof vs a decayed legacy weekly, which is exactly why Stage 3 must keep
+    every placement, not the once-chosen best), credit EVERY artist on the track
+    (features included), and sum those strongest contributions per artist.
+
+    Returns scores[artist_uri] = {"rank", "entered"}; `entered` = the number of
+    distinct ISRCs that credited the artist, and entered == 0 ⟺ rank 0 ⟺ the artist
+    never appeared under these weights (a Stage-1 cull candidate)."""
+    tw = TYPE_WEIGHT if type_weight is None else type_weight
+    scores: dict = {}
+    for s in songs.values():
+        best = 0.0
+        for p in s["placements"]:
+            w = tw.get(p.get("type"), default_type_weight)
+            if w <= 0:
+                continue
+            mult = legacy_mult if p.get("legacy") else 1.0
+            age = current_week - (p.get("week_number") or current_week)
+            if age < 0:
+                age = 0                          # future-dated week → treat as now
+            contrib = w * mult * (0.5 ** (age / half_life))
+            if contrib > best:
+                best = contrib
+        if best <= 0:
+            continue
+        for uri in s["artist_uris"]:
+            sc = scores.get(uri)
+            if sc is None:
+                scores[uri] = {"rank": best, "entered": 1}
+            else:
+                sc["rank"] += best
+                sc["entered"] += 1
+    return scores
 
 
 class BootstrapEngine:
@@ -256,7 +302,8 @@ class BootstrapEngine:
 
         # merge — one placement record per (song, playlist) appearance
         placement = {"week_number": pl.get("week_number") or 0,
-                     "type": pl.get("type"), "legacy": bool(pl.get("legacy"))}
+                     "type": pl.get("type"), "legacy": bool(pl.get("legacy")),
+                     "playlist_uri": pl.get("playlist_uri")}   # Stage 3 "why" panel links the exact playlist
         for isrc, album_type, artist_uris in rows:
             s = songs.get(isrc)
             if s is None:
@@ -272,36 +319,10 @@ class BootstrapEngine:
 
     # ─────────────────────────────── score ────────────────────────────────
     def _score(self, songs: dict, current_week: int) -> dict:
-        """Fold songs → scores[artist_uri] = {rank, entered}. Per §7: dedup by ISRC,
-        take each song's STRONGEST placement (max contribution, not a sum of
-        duplicates), credit EVERY artist on the track (featuring included), and sum
-        those strongest contributions per artist. `entered` = # of unique ISRCs that
-        credited the artist."""
-        half = HALF_LIFE_WEEKS
-        scores: dict = {}
-        for s in songs.values():
-            best = 0.0
-            for p in s["placements"]:
-                w = TYPE_WEIGHT.get(p.get("type"), DEFAULT_TYPE_WEIGHT)
-                if w <= 0:
-                    continue
-                mult = LEGACY_MULT if p.get("legacy") else 1.0
-                age = current_week - (p.get("week_number") or current_week)
-                if age < 0:
-                    age = 0                          # future-dated week → treat as now
-                contrib = w * mult * (0.5 ** (age / half))
-                if contrib > best:
-                    best = contrib
-            if best <= 0:
-                continue
-            for uri in s["artist_uris"]:
-                sc = scores.get(uri)
-                if sc is None:
-                    scores[uri] = {"rank": best, "entered": 1}
-                else:
-                    sc["rank"] += best
-                    sc["entered"] += 1
-        return scores
+        """Bootstrap's locked-default scoring — a thin wrapper over the shared pure
+        `score_songs` (Stage 3 calls that same function with live slider params).
+        Kept so existing call sites and behaviour read exactly as before."""
+        return score_songs(songs, current_week)
 
     def _candidate_row(self, uri: str, art: dict) -> dict:
         """Build ONE cleanup candidate in the EXACT shape Cleanup.tsx's `Candidate`
@@ -355,6 +376,22 @@ class BootstrapEngine:
         })
         return {"followed": len(followed), "with_rank": with_rank,
                 "candidates": len(candidates)}
+
+    def _save_songs(self, songs: dict, current_week: int):
+        """Stage 3A: persist the raw fold so the Health dashboard can recompute RANK
+        for ANY slider values without re-pulling Spotify (STAGE3.md §3/§4א.1). Stored
+        per-ISRC only — the per-artist index is rebuilt in memory on load (§10.3),
+        never a second file that could drift out of sync. Sets → lists for JSON,
+        exactly like the checkpoint. current_week travels WITH the songs so the Health
+        engine has one file + one mtime to invalidate its in-memory cache on (§12.1)."""
+        ser = {isrc: {"album_type": s["album_type"],
+                      "artist_uris": list(s["artist_uris"]),
+                      "placements": s["placements"]}
+               for isrc, s in songs.items()}
+        storage.save_json(SONGS_FILE, {
+            "generated": _ts(), "current_week": current_week,
+            "count": len(ser), "songs": ser,
+        })
 
     # ──────────────────────────── orchestration ───────────────────────────
     def run_bootstrap(self, sp, resume: bool = False):
@@ -429,6 +466,7 @@ class BootstrapEngine:
 
             scores = self._score(songs, current_week)
             summary = self._emit(scores, followed, current_week)
+            self._save_songs(songs, current_week)     # Stage 3A: raw material for live tuning
 
             storage.delete_file(CHECKPOINT_FILE)      # success → nothing to resume
             st.update({"is_running": False, "status": "done", "phase": "done",

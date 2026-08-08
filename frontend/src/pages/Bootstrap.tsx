@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
+import { NavBar } from '../components/NavBar';
 
 // Artist Health Engine — Stage 2. Drives the Bootstrap Cloud Run Job: pull tracks
 // for every included playlist, score each followed artist by decay-weighted RANK,
@@ -88,10 +89,10 @@ export const Bootstrap: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[#121212] text-zinc-200 pb-16">
-      {/* header */}
-      <div className="sticky top-0 z-20 bg-[#181818] border-b border-zinc-800 px-5 py-3 flex flex-wrap items-center gap-3">
-        <Link to="/dashboard" className="text-zinc-400 hover:text-white text-sm">← Dashboard</Link>
-        <h1 className="text-lg font-bold">⚖️ Artist Bootstrap</h1>
+      {/* nav + page toolbar */}
+      <NavBar />
+      <div className="sticky top-14 z-30 bg-[#181818] border-b border-zinc-800 px-5 py-2.5 flex flex-wrap items-center gap-3">
+        <h1 className="text-base font-bold">⚖️ Artist Bootstrap</h1>
         {st && (
           <span className="text-xs text-zinc-500">
             <b className="text-emerald-400">{st.included_count ?? 0}</b> playlists feeding the engine
@@ -99,11 +100,6 @@ export const Bootstrap: React.FC = () => {
             {typeof st.current_week === 'number' && st.current_week > 0 ? ` · week ${st.current_week}` : ''}
           </span>
         )}
-        <div className="ms-auto flex items-center gap-2">
-          <Link to="/recon" className="text-xs text-zinc-400 hover:text-white">📋 Recon</Link>
-          <Link to="/health" className="text-xs text-zinc-400 hover:text-white">🎛 Health</Link>
-          <Link to="/cleanup" className="text-xs text-zinc-400 hover:text-white">🧹 Cleanup</Link>
-        </div>
       </div>
 
       {err && <div className="mx-5 mt-3 p-3 rounded bg-red-900/40 text-red-300 text-sm">{err}</div>}

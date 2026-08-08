@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
+import { NavBar } from '../components/NavBar';
 
 // Artist Health Engine — Stage 3b: the tuning dashboard. Drag the knobs, watch the
 // 🔴🟠🟡🟢 band counts move live (server recompute < 1s on the in-memory songs — no
@@ -165,21 +166,16 @@ export const Health: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-[#121212] text-zinc-200 pb-28">
-      {/* header */}
-      <div className="sticky top-0 z-20 bg-[#181818] border-b border-zinc-800 px-5 py-3 flex flex-wrap items-center gap-3">
-        <Link to="/dashboard" className="text-zinc-400 hover:text-white text-sm">← Dashboard</Link>
-        <h1 className="text-lg font-bold">🎛 Health Tuning</h1>
+      {/* nav + page toolbar */}
+      <NavBar />
+      <div className="sticky top-14 z-30 bg-[#181818] border-b border-zinc-800 px-5 py-2.5 flex flex-wrap items-center gap-3">
+        <h1 className="text-base font-bold">🎛 Health Tuning</h1>
         {preview && (
           <span className="text-xs text-zinc-500">
             <b className="text-emerald-400">{preview.followed.toLocaleString()}</b> followed · week {preview.current_week}
             {preview.generated ? ` · data ${whenStr(preview.generated)}` : ''}
           </span>
         )}
-        <div className="ms-auto flex items-center gap-3">
-          <Link to="/recon" className="text-xs text-zinc-400 hover:text-white">📋 Recon</Link>
-          <Link to="/bootstrap" className="text-xs text-zinc-400 hover:text-white">⚖️ Bootstrap</Link>
-          <Link to="/cleanup" className="text-xs text-zinc-400 hover:text-white">🧹 Cleanup</Link>
-        </div>
       </div>
 
       {err && <div className="mx-5 mt-3 p-3 rounded bg-red-900/40 text-red-300 text-sm">{err}</div>}
@@ -254,7 +250,7 @@ export const Health: React.FC = () => {
               placeholder="Search by name, or paste a Spotify ID / URL…"
               className="mt-2 w-full px-3 py-2 text-sm bg-zinc-800 rounded outline-none focus:ring-1 focus:ring-emerald-600" />
             {q.trim() && (
-              <div className="absolute left-4 right-4 mt-1 bg-[#202020] border border-zinc-700 rounded-lg shadow-xl z-10 overflow-hidden">
+              <div className="absolute left-4 right-4 mt-1 bg-[#202020] border border-zinc-700 rounded-lg shadow-xl z-50 max-h-72 overflow-y-auto">
                 {matches.map(m => (
                   <button key={m.id} onClick={() => openWhy(m.id)}
                     className="block w-full text-left px-3 py-2 text-sm hover:bg-zinc-700/60 truncate">{m.name}</button>
@@ -334,7 +330,7 @@ export const Health: React.FC = () => {
 
       {/* why panel (modal) */}
       {(why || whyBusy) && (
-        <div className="fixed inset-0 z-30 bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={() => { setWhy(null); }}>
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-start justify-center p-4 overflow-y-auto" onClick={() => { setWhy(null); }}>
           <div className="bg-[#1c1c1c] rounded-xl max-w-2xl w-full my-8 border border-zinc-700" onClick={e => e.stopPropagation()}>
             {whyBusy || !why ? (
               <div className="p-10 text-center text-zinc-500">Loading breakdown…</div>

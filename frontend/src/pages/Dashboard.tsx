@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
-import { useAuth } from '../contexts/AuthContext';
 import axios from 'axios';
-import { LogOut, Search, Calendar, Play, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save, Layers, X, Check, Trash2 } from 'lucide-react';
+import { Search, Calendar, Play, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save, Layers, X, Check, Trash2 } from 'lucide-react';
+import { NavBar } from '../components/NavBar';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
 
@@ -63,7 +62,7 @@ interface CheckpointInfo {
 }
 
 export const Dashboard: React.FC = () => {
-    const { user, logout } = useAuth();
+    // auth (user / logout) is handled by NavBar + ProtectedRoute
 
     // State
     const [scanStatus, setScanStatus] = useState<ScanStatus>({
@@ -627,44 +626,19 @@ export const Dashboard: React.FC = () => {
     return (
         <div className="min-h-screen bg-[#121212] text-white font-sans">
             {/* Top Bar */}
-            <header className="sticky top-0 z-50 bg-[#000]/90 backdrop-blur-md border-b border-[#333] px-6 py-4 flex justify-between items-center">
-                <div className="flex items-center gap-3">
-                    <img src="/logo.svg" alt="Aum Radar" className="h-9 w-auto" />
-                    <h1 className="text-xl font-bold tracking-tight">
-                        Aum <span className="text-[#1DB954]">Radar</span>
-                    </h1>
-                </div>
-
-                <div className="flex items-center gap-4">
-                    <div className="text-sm font-medium text-gray-300 hidden md:block">
-                        {user?.display_name}
-                    </div>
+            <NavBar right={
+                <>
                     <button onClick={() => setShowHistory(true)} className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] relative" title="Scan History">
                         <Clock className="w-5 h-5" />
                         {scanHistory.length > 0 && (
                             <span className="absolute top-1 right-1 w-2 h-2 bg-[#1DB954] rounded-full" />
                         )}
                     </button>
-                    <button onClick={() => setShowAutoSettings(true)} className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] mr-2" title="Automation Settings">
+                    <button onClick={() => setShowAutoSettings(true)} className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954]" title="Automation Settings">
                         <Calendar className="w-5 h-5" />
                     </button>
-                    <Link to="/recon" className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] text-lg leading-none" title="Playlist Recon">
-                        📋
-                    </Link>
-                    <Link to="/bootstrap" className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] text-lg leading-none" title="Artist Bootstrap — build RANK scores">
-                        ⚖️
-                    </Link>
-                    <Link to="/health" className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] text-lg leading-none" title="Health Tuning — tune RANK & candidates live">
-                        🎛
-                    </Link>
-                    <Link to="/cleanup" className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-[#1DB954] text-lg leading-none" title="Artist Cleanup">
-                        🧹
-                    </Link>
-                    <button onClick={logout} className="p-2 hover:bg-[#333] rounded-full transition-colors text-gray-400 hover:text-white">
-                        <LogOut className="w-5 h-5" />
-                    </button>
-                </div>
-            </header>
+                </>
+            } />
 
             <main className="container mx-auto px-6 py-8">
 

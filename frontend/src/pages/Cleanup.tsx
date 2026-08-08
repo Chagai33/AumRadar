@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
 import axios from 'axios';
+import { NavBar } from '../components/NavBar';
 
 interface Candidate {
   artist_uri: string;
@@ -158,9 +158,9 @@ export const Cleanup: React.FC = () => {
   return (
     <div className="min-h-screen bg-[#121212] text-zinc-200 pb-28">
       {/* header */}
-      <div className="sticky top-0 z-20 bg-[#181818] border-b border-zinc-800 px-5 py-3 flex flex-wrap items-center gap-3">
-        <Link to="/dashboard" className="text-zinc-400 hover:text-white text-sm">← Dashboard</Link>
-        <h1 className="text-lg font-bold">🧹 Artist Cleanup</h1>
+      <NavBar />
+      <div className="sticky top-14 z-30 bg-[#181818] border-b border-zinc-800 px-5 py-2.5 flex flex-wrap items-center gap-3">
+        <h1 className="text-base font-bold">🧹 Artist Cleanup</h1>
         <span className="text-xs text-zinc-500">
           {data?.count} candidates · {data?.threshold}+ releases · {data?.window}
         </span>
@@ -278,7 +278,7 @@ export const Cleanup: React.FC = () => {
 
       {/* confirm modal */}
       {confirmOpen && (
-        <div className="fixed inset-0 z-30 bg-black/70 flex items-center justify-center p-4" onClick={() => setConfirmOpen(false)}>
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4" onClick={() => setConfirmOpen(false)}>
           <div className="bg-[#202020] rounded-lg p-6 max-w-md w-full" onClick={e => e.stopPropagation()}>
             <h2 className="text-lg font-bold mb-2">Remove {selected.size} artist{selected.size === 1 ? '' : 's'}?</h2>
             <p className="text-sm text-zinc-400 mb-4">

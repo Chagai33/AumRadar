@@ -438,7 +438,16 @@ class BootstrapEngine:
             self._save_state(st)
 
         except Exception as e:
-            st.update({"is_running": False, "status": "error", "error": str(e)})
+            msg = str(e)
+            # When the cached token can't be validated against the requested scope,
+            # spotipy falls back to an interactive login prompt (input()) — headless
+            # that raises EOFError ("EOF when reading a line"). Translate it into an
+            # actionable message instead of the cryptic default.
+            if isinstance(e, EOFError) or "EOF when reading a line" in msg:
+                msg = ("Spotify authorization is missing the playlist-read permission "
+                       "(the background token is out of date). Log out and log back in "
+                       "on the site to re-authorize, then run Bootstrap again.")
+            st.update({"is_running": False, "status": "error", "error": msg})
             self._log(st, f"ERROR: {e}")
             self._save_state(st)
             raise

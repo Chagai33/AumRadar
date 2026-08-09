@@ -72,7 +72,7 @@ export const Dashboard: React.FC = () => {
     const [autoResume, setAutoResume] = useState(true);
 
     const [results, setResults] = useState<Track[]>([]);
-    const [dateOption, setDateOption] = useState<'last7' | 'last30' | 'custom' | 'sat_to_fri' | 'sun_to_sat'>('sun_to_sat');
+    const [dateOption, setDateOption] = useState<'last7' | 'last30' | 'custom' | 'sat_to_fri' | 'sun_to_sat'>('sat_to_fri');
     const [customStart, setCustomStart] = useState('');
     const [customEnd, setCustomEnd] = useState('');
 

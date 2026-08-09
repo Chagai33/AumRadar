@@ -195,6 +195,57 @@ def aggregate_events():
     return all_events, weeks
 
 
+# ───────────────────────────── Release Quality (3a) ────────────────────────────
+def release_quality(events, followed_uris, *, current_week, half_life=26.0,
+                    secondary_weight=0.3, shadow_factor=0.05,
+                    smoothing_k=4.0, smoothing_prior=0.3) -> dict:
+    """PURE. Fold release_events → per-artist forward **efficiency** (how much of what
+    an artist releases actually enters). This is the second axis that catches the
+    "flooder" (releases constantly, rarely enters) — invisible to the snapshot RANK.
+
+    Per non-album event: decay = 0.5^(age/half_life); role weight = 1.0 primary /
+    `secondary_weight` secondary (a feature counts less — "helps more than it hurts",
+    §7). Each release adds `w=decay*role` to the DENOMINATOR (an opportunity); to the
+    NUMERATOR it adds w on a hit, w*shadow_factor on a shadow, 0 on a miss.
+    efficiency = (num + prior*k) / (den + k) — Bayesian shrink toward `smoothing_prior`
+    so a 1-of-1 artist doesn't read as 100% (§9). `primary_releases` (own primary,
+    non-album) drives the min-sample gate (§22.3). All params ⚙️ tune live (§16).
+
+    soft-prune: only FOLLOWED artists (`followed_uris`) are aggregated (never mutate the
+    log). Returns {artist_uri: {efficiency, num, den, hits, releases, primary_releases}}."""
+    half_life = half_life if half_life and half_life > 0 else 26.0
+    agg = {}
+    for e in events:
+        uri = e.get("artist_uri")
+        if followed_uris is not None and uri not in followed_uris:
+            continue
+        outcome = e.get("outcome")
+        if outcome == "album":
+            continue                      # recorded, not scored (§8)
+        role = e.get("role")
+        rw = 1.0 if role == "primary" else secondary_weight
+        age = current_week - (e.get("release_week") or current_week)
+        if age < 0:
+            age = 0
+        w = rw * (0.5 ** (age / half_life))
+        a = agg.get(uri)
+        if a is None:
+            a = agg[uri] = {"num": 0.0, "den": 0.0, "hits": 0, "releases": 0,
+                            "primary_releases": 0}
+        a["den"] += w
+        if outcome == "hit":
+            a["num"] += w; a["hits"] += 1
+        elif outcome == "shadow":
+            a["num"] += w * shadow_factor
+        a["releases"] += 1
+        if role == "primary":
+            a["primary_releases"] += 1
+    for uri, a in agg.items():
+        denom = a["den"] + smoothing_k
+        a["efficiency"] = round((a["num"] + smoothing_prior * smoothing_k) / denom, 4) if denom > 0 else 0.0
+    return agg
+
+
 # ─────────────────────────── I/O + orchestration (2b) ──────────────────────────
 HISTORY_DIR = "cache/scan_history"                 # mirrors scanner.py
 RECON_SNAPSHOT_FILE = "cache/recon_playlists.json"

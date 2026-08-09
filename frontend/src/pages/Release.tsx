@@ -20,6 +20,9 @@ interface Coverage {
   available_scans: number; scans: ScanOpt[]; latest_week: number | null;
 }
 interface WeekResult { week_number: number; ok: boolean; error?: string; releases?: number; hits?: number; shadow?: number; misses?: number; albums?: number; }
+interface Flooder { artist_uri: string; artist_id: string; artist: string; image: string; genres: string; followers: number; spotify_url: string; efficiency: number; releases: number; hits: number; primary_releases: number; }
+interface Quality { flooders: Flooder[]; flooder_count: number; measured_weeks: number; scored_artists: number; current_week: number | null; note?: string; }
+const QDEF = { half_life: 26, secondary_weight: 0.3, shadow_factor: 0.05, smoothing_k: 4, smoothing_prior: 0.3, min_primary: 4, threshold: 0.15 };
 
 export const Release: React.FC = () => {
   const [data, setData] = useState<Coverage | null>(null);
@@ -29,6 +32,11 @@ export const Release: React.FC = () => {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<WeekResult[]>([]);
+  const [qp, setQp] = useState(QDEF);
+  const [q, setQ] = useState<Quality | null>(null);
+  const [qbusy, setQbusy] = useState(false);
+  const [qsel, setQsel] = useState<Set<string>>(new Set());
+  const [qres, setQres] = useState('');
 
   const load = async () => {
     try {
@@ -71,6 +79,23 @@ export const Release: React.FC = () => {
       setBusy(false);
       await load();
     }
+  };
+
+  // Release Quality (flooders) — live recompute on any knob change (debounced).
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      try { const r = await axios.post('/api/release/quality', qp); setQ(r.data); } catch { /* keep last */ }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [qp]);
+  const toggleFl = (uri: string) => setQsel(p => { const n = new Set(p); n.has(uri) ? n.delete(uri) : n.add(uri); return n; });
+  const sendFlooders = async () => {
+    setQbusy(true); setQres('');
+    try {
+      const r = await axios.post('/api/release/to-cleanup', { artist_uris: [...qsel] });
+      setQres(`Added ${r.data.added} to Cleanup`); setQsel(new Set());
+    } catch (e: any) { setQres(e.response?.data?.detail || e.message); }
+    finally { setQbusy(false); }
   };
 
   const backlog = data?.backlog || [];
@@ -162,6 +187,53 @@ export const Release: React.FC = () => {
           </div>
         )}
 
+        {/* release quality — flooders for review */}
+        <div className="bg-[#181818] border border-zinc-800 rounded-xl p-4">
+          <div className="text-xs font-bold text-zinc-500 uppercase tracking-wide">Release Quality — flooders for review</div>
+          <p className="text-[11px] text-zinc-600 mb-3">Artists who release a lot but rarely enter. A separate axis from the RANK list — review here, then send to Cleanup.</p>
+          {(!q || q.measured_weeks === 0) ? (
+            <div className="text-sm text-zinc-500">Measure at least one week above to compute release quality.</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-3 mb-3">
+                <Rng label="Half-life (wk)" min={4} max={104} step={1} value={qp.half_life} onChange={v => setQp({ ...qp, half_life: v })} />
+                <Rng label="Flooder threshold" min={0} max={0.6} step={0.01} value={qp.threshold} onChange={v => setQp({ ...qp, threshold: v })} />
+                <Rng label="Min releases" min={1} max={12} step={1} value={qp.min_primary} onChange={v => setQp({ ...qp, min_primary: v })} />
+                <Rng label="Feature weight" min={0} max={1} step={0.05} value={qp.secondary_weight} onChange={v => setQp({ ...qp, secondary_weight: v })} />
+                <Rng label="Shadow factor" min={0} max={0.5} step={0.01} value={qp.shadow_factor} onChange={v => setQp({ ...qp, shadow_factor: v })} />
+                <Rng label="Smoothing" min={0} max={12} step={0.5} value={qp.smoothing_k} onChange={v => setQp({ ...qp, smoothing_k: v })} />
+              </div>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-sm"><b className="text-red-400">{q.flooder_count}</b> flooders
+                  <span className="text-zinc-500"> of {q.scored_artists} scored · {q.measured_weeks} weeks</span></span>
+                <button onClick={sendFlooders} disabled={qbusy || qsel.size === 0}
+                  className="ms-auto px-3 py-1.5 text-sm rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 font-semibold">
+                  {qbusy ? 'Sending…' : `Add ${qsel.size} to Cleanup`}
+                </button>
+              </div>
+              {qres && <div className="text-xs text-emerald-400 mb-2">{qres} · <Link to="/cleanup" className="underline">Go to Cleanup →</Link></div>}
+              <div className="max-h-96 overflow-y-auto">
+                {q.flooders.map(f => (
+                  <div key={f.artist_uri} onClick={() => toggleFl(f.artist_uri)}
+                    className="flex items-center gap-3 px-2 py-1.5 rounded hover:bg-zinc-800/50 cursor-pointer">
+                    <input type="checkbox" readOnly checked={qsel.has(f.artist_uri)} className="w-4 h-4 accent-red-500" />
+                    {f.image ? <img src={f.image} className="w-8 h-8 rounded-full object-cover" alt="" /> : <div className="w-8 h-8 rounded-full bg-zinc-700" />}
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm font-medium truncate">{f.artist}</div>
+                      <div className="text-xs text-zinc-500 truncate">{f.genres || '—'}</div>
+                    </div>
+                    <div className="text-xs text-center w-20"><b>{f.hits}</b>/<b>{f.releases}</b> <span className="text-zinc-500">entered</span></div>
+                    <span className="text-xs text-white px-2 py-0.5 rounded bg-red-700">{Math.round(f.efficiency * 100)}%</span>
+                    <a href={f.spotify_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
+                      className="text-xs text-emerald-400 hover:underline w-14 text-center">Spotify ↗</a>
+                  </div>
+                ))}
+                {q.flooders.length === 0 && <div className="text-sm text-zinc-500 py-4 text-center">No flooders at these settings 🎉</div>}
+              </div>
+            </>
+          )}
+        </div>
+
         {/* recently measured */}
         {data && data.measured.length > 0 && (
           <div>
@@ -174,10 +246,18 @@ export const Release: React.FC = () => {
           </div>
         )}
 
-        <p className="text-xs text-zinc-600">
-          The measured data feeds Release Quality (coming next) → the "flooder" review list → <Link to="/cleanup" className="text-emerald-400 hover:underline">Cleanup</Link>.
-        </p>
       </div>
     </div>
   );
 };
+
+const Rng: React.FC<{ label: string; min: number; max: number; step: number; value: number; onChange: (v: number) => void }> =
+  ({ label, min, max, step, value, onChange }) => (
+    <div>
+      <div className="flex justify-between text-[11px] mb-0.5">
+        <span className="text-zinc-400">{label}</span><span className="font-mono text-emerald-400">{value}</span>
+      </div>
+      <input type="range" min={min} max={max} step={step} value={value}
+        onChange={e => onChange(Number(e.target.value))} className="w-full accent-emerald-500 cursor-pointer" />
+    </div>
+  );

@@ -289,5 +289,7 @@ def coverage_state(history, playlists, cov) -> dict:
                            reverse=True)[:12],
         "backlog": backlog,
         "available_scans": len(scans),
+        "scans": [{"id": s["id"], "dates": f"{s.get('start_date')} .. {s.get('end_date')}",
+                   "tracks": s.get("track_count")} for s in scans[:20]],
         "latest_week": weeklies[0]["week_number"] if weeklies else None,
     }

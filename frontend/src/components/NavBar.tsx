@@ -11,6 +11,7 @@ const NAV = [
   { to: '/dashboard', label: 'Scan', icon: '🛰️' },
   { to: '/recon', label: 'Recon', icon: '📋' },
   { to: '/bootstrap', label: 'Bootstrap', icon: '⚖️' },
+  { to: '/release', label: 'Weekly', icon: '📆' },
   { to: '/health', label: 'Health', icon: '🎛' },
   { to: '/cleanup', label: 'Cleanup', icon: '🧹' },
 ];

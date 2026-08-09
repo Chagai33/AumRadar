@@ -7,6 +7,7 @@ import { Cleanup } from './pages/Cleanup';
 import { Recon } from './pages/Recon';
 import { Bootstrap } from './pages/Bootstrap';
 import { Health } from './pages/Health';
+import { Release } from './pages/Release';
 import { motion, AnimatePresence, type Variants } from 'framer-motion';
 
 const logoVariants: Variants = {
@@ -111,6 +112,14 @@ function App() {
               element={
                 <ProtectedRoute>
                   <Health />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/release"
+              element={
+                <ProtectedRoute>
+                  <Release />
                 </ProtectedRoute>
               }
             />

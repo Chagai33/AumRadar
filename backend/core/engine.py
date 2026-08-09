@@ -352,7 +352,8 @@ def get_tracks_for_albums_in_batch(sp, album_ids):
                                 'id': album['id'],
                                 'name': album['name'],
                                 'images': album['images'],
-                                'release_date': album['release_date']
+                                'release_date': album['release_date'],
+                                'album_type': album.get('album_type'),  # Stage 4: single vs album (skip albums in scoring)
                             }
                         all_tracks[aid] = items
                     else:

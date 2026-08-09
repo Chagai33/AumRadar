@@ -373,6 +373,39 @@ class AdvancedEngine:
             self.state["is_running"] = False
             self._save_state()
 
+    def _enrich_isrc(self, work_sp, tracks):
+        """Stage 4 (STAGE4.md §22.2): add each track's ISRC via a BATCHED sp.tracks()
+        pass (50/call), run HERE — after the whole scan is gathered, OUTSIDE the
+        per-artist ThreadPool — so 50 IDs from many artists share one call. (Inside
+        process_artist it would be 1-2 tracks/call in parallel → 429.) A Simplified
+        Track from sp.albums() carries no external_ids, so ISRC needs this separate
+        call. BEST-EFFORT: it never fails an already-successful scan — a rate-limit
+        just leaves some tracks without ISRC (Stage 4 falls back to the track URI, like
+        Bootstrap). Called via run_in_executor so the heartbeat keeps ticking."""
+        from .engine import safe_api_call
+        ids, seen_ids = [], set()
+        for t in tracks:
+            tid = t.get("id")
+            if tid and tid not in seen_ids and not (t.get("external_ids") or {}).get("isrc"):
+                seen_ids.add(tid)
+                ids.append(tid)
+        if not ids:
+            return
+        by_id = {}
+        try:
+            for i in range(0, len(ids), 50):
+                res = safe_api_call(work_sp.tracks, ids[i:i + 50])
+                for full in (res.get("tracks") or []):
+                    if full and full.get("id"):
+                        by_id[full["id"]] = full.get("external_ids") or {}
+        except Exception as e:
+            self.log(f"ISRC enrichment stopped early ({e}) — saving with partial ISRC.")
+        for t in tracks:
+            ext = by_id.get(t.get("id"))
+            if ext:
+                t["external_ids"] = ext
+        self.log(f"ISRC enrichment: tagged {len(by_id)}/{len(ids)} tracks.")
+
     async def _scan_and_finalize(self, work_sp, sp, artists, settings,
                                  auto_export_name, results_buffer, seen, start_index):
         """Shared scan body for BOTH a fresh scan_process and a resume_scan. Runs
@@ -553,7 +586,10 @@ class AdvancedEngine:
             return
 
         # Finalize
-        self.log(f"DEBUG: Loop finished. Saving {len(results_buffer)} results.")
+        self.log(f"DEBUG: Loop finished. Enriching ISRC for {len(results_buffer)} results.")
+        # Stage 4: batched ISRC enrichment (§22.2) — off the event loop so the
+        # heartbeat keeps ticking; best-effort, never fails a completed scan.
+        await loop.run_in_executor(None, self._enrich_isrc, work_sp, results_buffer)
         storage.save_json(RESULTS_FILE, results_buffer)
         self._save_to_history(results_buffer, settings)
         # Completed successfully → drop the resumable checkpoint + frozen snapshot

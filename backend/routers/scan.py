@@ -10,16 +10,20 @@ router = APIRouter()
 
 
 def resolve_dynamic_dates(settings_dict: dict) -> dict:
-    """Replace 'DYNAMIC' (Sun–Sat week) or 'LAST7' (rolling 7 days) with real dates."""
+    """Replace 'DYNAMIC' (Sat–Fri release week) or 'LAST7' (rolling 7 days) with real dates."""
     start = settings_dict.get('start_date')
     end   = settings_dict.get('end_date')
     today = datetime.date.today()
 
     if start == 'DYNAMIC' or end == 'DYNAMIC':
-        # Current calendar week: Sunday → Saturday
-        days_since_sunday = (today.weekday() + 1) % 7
-        week_start = today - datetime.timedelta(days=days_since_sunday)
-        week_end   = week_start + datetime.timedelta(days=6)
+        # Release week: Saturday → Friday, anchored to the MOST RECENT Friday (today if
+        # it IS Friday). New music drops Friday = the window's last day; a late run on
+        # Sat/Sun/Mon still resolves to the week that just ENDED (not a future window),
+        # and consecutive weeks tile with no gap. Matches the frontend 'sat_to_fri'.
+        # STAGE4.md §19.3 / §20.1.  weekday(): Mon=0 … Fri=4 Sat=5 Sun=6.
+        days_since_friday = (today.weekday() - 4) % 7
+        week_end   = today - datetime.timedelta(days=days_since_friday)    # most recent Friday
+        week_start = week_end - datetime.timedelta(days=6)                # the Saturday before
         settings_dict = {**settings_dict, 'start_date': week_start.isoformat(), 'end_date': week_end.isoformat()}
     elif start == 'LAST7' or end == 'LAST7':
         # Rolling: last 7 days up to and including today

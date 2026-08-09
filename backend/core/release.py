@@ -193,3 +193,101 @@ def aggregate_events():
         if wf and wf.get("events"):
             all_events.extend(wf["events"])
     return all_events, weeks
+
+
+# ─────────────────────────── I/O + orchestration (2b) ──────────────────────────
+HISTORY_DIR = "cache/scan_history"                 # mirrors scanner.py
+RECON_SNAPSHOT_FILE = "cache/recon_playlists.json"
+
+
+def _uri_to_id(uri: str) -> str:
+    return uri.rsplit(":", 1)[-1] if uri else uri
+
+
+def _load_scan_releases(scan_id: str) -> list:
+    """The releases for a week = the tracks of that week's completed weekly scan, from
+    its IMMUTABLE history snapshot (NOT the transient scan_results.json which any later
+    scan overwrites — §21.1). Each track carries external_ids.isrc + album.album_type
+    (persisted in phase 1)."""
+    return storage.load_json(f"{HISTORY_DIR}/{scan_id}.json", default=[]) or []
+
+
+def _playlist_isrcs(sp, playlist_uri: str) -> set:
+    """The ISRCs currently in a playlist (the 'entered' side). Paginated; a deleted/
+    private playlist (403/404) yields what we have rather than failing the whole run.
+    Uses the session/user client, whose 429s surface with Retry-After (§20.4)."""
+    if not playlist_uri:
+        return set()
+    pid = _uri_to_id(playlist_uri)
+    isrcs, offset = set(), 0
+    while True:
+        try:
+            page = sp.playlist_items(pid, limit=100, offset=offset, additional_types=("track",),
+                                     fields="next,items(track(uri,external_ids(isrc)))")
+        except Exception as e:
+            if getattr(e, "http_status", None) in (403, 404):
+                return isrcs
+            raise
+        items = page.get("items") or []
+        for it in items:
+            tr = (it or {}).get("track") or {}
+            isrc = (tr.get("external_ids") or {}).get("isrc") or tr.get("uri")
+            if isrc:
+                isrcs.add(isrc)
+        if len(items) < 100:
+            break
+        offset += 100
+    return isrcs
+
+
+def measure_and_write(sp, week_no, playlist_uri, scan_id, oop_playlist_uri=None,
+                      source="weekly") -> dict:
+    """Orchestrate one week's measurement: load the scan's releases (history snapshot),
+    pull the official Week#N playlist (+ optional #N Outofplaylist = shadow), fold via
+    measure_week, and persist (week file + coverage). Returns the summary."""
+    releases = _load_scan_releases(scan_id)
+    weekly_isrcs = _playlist_isrcs(sp, playlist_uri)
+    oop_isrcs = _playlist_isrcs(sp, oop_playlist_uri) if oop_playlist_uri else set()
+    events, summary = measure_week(releases, weekly_isrcs, oop_isrcs, week_no)
+    write_week(week_no, events, summary, scan_id=scan_id, playlist_uri=playlist_uri,
+               source=source)
+    return summary
+
+
+def coverage_state(history, playlists, cov) -> dict:
+    """Build the coverage view + the multi-week backlog with PROPOSED links. Pure.
+    Pairs each recent completed, full (`completed` & not `partial_scan`, §7) weekly scan
+    — newest first — with the next unmeasured official Week#N playlist (propose-and-
+    confirm; the user can override the scan per week in the UI). Bounded by available
+    scans, so a first run doesn't propose all 260 historical weeks (those are the seed)."""
+    weeklies = [p for p in (playlists or []) if p.get("type") == "weekly" and p.get("week_number")]
+    weeklies.sort(key=lambda p: p["week_number"], reverse=True)
+    oop_by_week = {p["week_number"]: p["playlist_uri"] for p in (playlists or [])
+                   if p.get("type") == "outofplaylist" and p.get("week_number")}
+    scans = [h for h in (history or []) if h.get("completed") and not h.get("partial_scan")]
+    scans.sort(key=lambda h: h.get("end_date", ""), reverse=True)
+    measured = set((cov.get("weeks") or {}).keys())
+
+    unmeasured = (p for p in weeklies if str(p["week_number"]) not in measured)
+    backlog = []
+    for scan in scans:
+        p = next(unmeasured, None)
+        if p is None:
+            break
+        backlog.append({
+            "week_number": p["week_number"],
+            "playlist_uri": p["playlist_uri"],
+            "playlist_name": p.get("name"),
+            "oop_playlist_uri": oop_by_week.get(p["week_number"]),
+            "proposed_scan_id": scan["id"],
+            "proposed_scan_dates": f"{scan.get('start_date')} .. {scan.get('end_date')}",
+            "proposed_scan_tracks": scan.get("track_count"),
+        })
+    return {
+        "measured_count": len(measured),
+        "measured": sorted(measured, key=lambda w: int(w) if str(w).isdigit() else 0,
+                           reverse=True)[:12],
+        "backlog": backlog,
+        "available_scans": len(scans),
+        "latest_week": weeklies[0]["week_number"] if weeklies else None,
+    }

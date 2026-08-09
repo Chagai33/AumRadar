@@ -13,6 +13,8 @@ interface PL {
   track_count: number;
   image: string | null;
   spotify_url: string;
+  public: boolean | null;   // Spotify: public ≈ shown on profile; null when Spotify omits it
+  collaborative?: boolean;
   included: boolean;
   auto_included: boolean;
 }
@@ -99,6 +101,9 @@ export const Recon: React.FC = () => {
   };
 
   const includedCount = useMemo(() => (data || []).filter(p => p.included).length, [data]);
+  const pubCount = useMemo(() => (data || []).filter(p => p.public === true).length, [data]);
+  const privCount = useMemo(() => (data || []).filter(p => p.public === false).length, [data]);
+  const nullCount = (data?.length || 0) - pubCount - privCount;
   const gVisible = (p: PL) => (!q || p.name.toLowerCase().includes(q.toLowerCase())) && (!hideExc || p.included);
   const toggle = (set: Set<string>, key: string, upd: (s: Set<string>) => void) => {
     const n = new Set(set); n.has(key) ? n.delete(key) : n.add(key); upd(n);
@@ -115,6 +120,10 @@ export const Recon: React.FC = () => {
           <span className="text-xs text-zinc-500">
             {data.length} owned · <b className="text-emerald-400">{includedCount}</b> feeding the engine
             {meta?.followed_count ? ` · ${meta.followed_count} followed (excluded)` : ''}
+            {data.length > 0 && (
+              <> · <span title="Public — shown on your profile">🌐 {pubCount}</span> · <span title="Private">🔒 {privCount}</span>
+                {nullCount > 0 && <span title="Spotify returned no public/private value for these"> · ❔ {nullCount}</span>}</>
+            )}
           </span>
         )}
         <button onClick={rescan} disabled={scanning}
@@ -225,6 +234,8 @@ export const Recon: React.FC = () => {
                                   {p.name}
                                   {p.legacy && <span className="ms-1 text-[10px] px-1 rounded bg-amber-900/50 text-amber-300">legacy</span>}
                                 </span>
+                                {p.public === true && <span title="Public — shown on your profile" className="text-[11px] leading-none">🌐</span>}
+                                {p.public === false && <span title="Private" className="text-[11px] leading-none opacity-40">🔒</span>}
                                 <span className={`text-[10px] px-1.5 py-0.5 rounded ${TYPE_CLS[p.type]}`}>
                                   {p.week_number != null ? `#${p.week_number}` : TYPE_LABEL[p.type]}
                                 </span>

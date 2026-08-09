@@ -234,6 +234,11 @@ def scan(request: Request):
             "track_count": (pl.get("tracks") or {}).get("total", 0),
             "image": imgs[0]["url"] if imgs else None,
             "spotify_url": (pl.get("external_urls") or {}).get("spotify"),
+            # Spotify: public/private status "(if it is added to the user's profile)" —
+            # i.e. public ≈ shown on the profile. Captured read-only, no scoring impact;
+            # available as a future curation signal. Can be null when Spotify omits it.
+            "public": pl.get("public"),
+            "collaborative": pl.get("collaborative"),
         })
         counts[e["type"]] = counts.get(e["type"], 0) + 1
 

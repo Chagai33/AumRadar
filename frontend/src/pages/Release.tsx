@@ -17,7 +17,7 @@ interface BacklogRow {
 interface ScanOpt { id: string; dates: string; tracks: number; }
 interface Coverage {
   measured_count: number; measured: string[]; backlog: BacklogRow[];
-  available_scans: number; scans: ScanOpt[]; latest_week: number | null;
+  available_scans: number; scans: ScanOpt[]; latest_week: number | null; min_tracks?: number;
 }
 interface WeekResult { week_number: number; ok: boolean; error?: string; releases?: number; hits?: number; shadow?: number; misses?: number; albums?: number; }
 interface Flooder { artist_uri: string; artist_id: string; artist: string; image: string; genres: string; followers: number; spotify_url: string; efficiency: number; releases: number; hits: number; primary_releases: number; }
@@ -99,6 +99,8 @@ export const Release: React.FC = () => {
   };
 
   const backlog = data?.backlog || [];
+  const measurable = backlog.filter(b => b.proposed_scan_id).length;
+  const needScan = backlog.length - measurable;
 
   if (loading) return <div className="min-h-screen bg-[#121212] text-zinc-300 flex items-center justify-center">Loading coverage…</div>;
 
@@ -143,18 +145,27 @@ export const Release: React.FC = () => {
         {/* backlog */}
         {backlog.length === 0 ? (
           <div className="p-5 rounded-lg border border-emerald-700/40 bg-emerald-900/15 text-center">
-            <div className="text-2xl mb-1">✓</div>
-            <div className="font-semibold text-emerald-300">All caught up</div>
-            <p className="text-sm text-zinc-400 mt-1">
-              No unmeasured weeks with an available scan. When you publish the next week's playlist (and its
-              scan is done), it'll appear here to measure.
-            </p>
+            <div className="text-2xl mb-1">{data && data.available_scans === 0 ? '🔍' : '✓'}</div>
+            {data && data.available_scans === 0 ? (
+              <>
+                <div className="font-semibold text-amber-300">No full weekly scans found</div>
+                <p className="text-sm text-zinc-400 mt-1">
+                  A measurement needs a <b>complete</b> weekly scan — one-week window and ≥{data.min_tracks ?? 300} tracks.
+                  1-day, multi-week, or tiny scans are ignored so the data stays correct. Run a proper weekly scan, then come back.
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="font-semibold text-emerald-300">All caught up</div>
+                <p className="text-sm text-zinc-400 mt-1">Every week with a real scan is measured. The next week appears here once you publish its playlist.</p>
+              </>
+            )}
           </div>
         ) : (
           <div className="bg-[#181818] border border-zinc-800 rounded-xl overflow-hidden">
             <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800">
-              <span className="text-sm font-semibold">⚠️ {backlog.length} week{backlog.length === 1 ? '' : 's'} to measure</span>
-              <span className="text-xs text-zinc-500">{selected.size} selected</span>
+              <span className="text-sm font-semibold">⚠️ {measurable} week{measurable === 1 ? '' : 's'} ready to measure</span>
+              <span className="text-xs text-zinc-500">{selected.size} selected{needScan ? ` · ${needScan} need a real scan` : ''}</span>
               <button onClick={measure} disabled={busy || selected.size === 0}
                 className="ms-auto px-4 py-1.5 text-sm rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 font-semibold">
                 {busy ? 'Measuring…' : `Measure ${selected.size} →`}

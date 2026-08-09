@@ -305,42 +305,94 @@ def measure_and_write(sp, week_no, playlist_uri, scan_id, oop_playlist_uri=None,
     return summary
 
 
-def coverage_state(history, playlists, cov) -> dict:
-    """Build the coverage view + the multi-week backlog with PROPOSED links. Pure.
-    Pairs each recent completed, full (`completed` & not `partial_scan`, §7) weekly scan
-    — newest first — with the next unmeasured official Week#N playlist (propose-and-
-    confirm; the user can override the scan per week in the UI). Bounded by available
-    scans, so a first run doesn't propose all 260 historical weeks (those are the seed)."""
+MIN_WEEK_TRACKS = 300      # below this a "scan" is a 1-day / test / failed run — NOT a
+                           # representative weekly measurement (user rule 2026-08-09).
+SCAN_SPAN_DAYS = (5, 9)    # a single-week window (Sat–Fri / Sun–Sat = 6, last7 = 7);
+                           # excludes 1-day and multi-week custom ranges (§7 "single week").
+
+
+def _parse_date(s):
+    try:
+        return datetime.date.fromisoformat(str(s)[:10])
+    except Exception:
+        return None
+
+
+def _valid_weekly_scans(history, min_tracks) -> list:
+    """A scan counts as a legitimate weekly measurement only if it's completed, NOT a
+    selected-artist run, spans ~one week, AND has enough tracks (a real week yields
+    hundreds; a 1-day/test/interrupted run yields a handful). Sorted newest-first."""
+    out = []
+    for h in (history or []):
+        if not h.get("completed") or h.get("partial_scan"):
+            continue
+        sd, ed = _parse_date(h.get("start_date")), _parse_date(h.get("end_date"))
+        if not sd or not ed:
+            continue
+        if not (SCAN_SPAN_DAYS[0] <= (ed - sd).days <= SCAN_SPAN_DAYS[1]):
+            continue                                   # not a single-week window
+        if (h.get("track_count") or 0) < min_tracks:
+            continue                                   # too few tracks → not representative
+        out.append({**h, "_end": ed})
+    out.sort(key=lambda h: h["_end"], reverse=True)
+    return out
+
+
+def coverage_state(history, playlists, cov, min_tracks=MIN_WEEK_TRACKS) -> dict:
+    """Coverage view + the multi-week backlog with PROPOSED links. Pure.
+
+    FIX (2026-08-09): only LEGITIMATE weekly scans are offered (§7: completed +
+    non-partial + ~one-week span + ≥min_tracks) — a 1-day, multi-week, or tiny scan is
+    never a measurement source (else the denominator is partial/wrong). And a scan is
+    matched to a week by **DATE** (anchor the newest unmeasured week to the newest valid
+    scan, then align each week to the scan within ±3 days of its expected weekly slot) —
+    not by naive recency-order, which mis-paired weeks with unrelated scans. A week with
+    no valid scan near its slot gets NO proposal (needs a real scan / stays a gap). The
+    user still confirms/overrides per row in the UI (propose-and-confirm)."""
     weeklies = [p for p in (playlists or []) if p.get("type") == "weekly" and p.get("week_number")]
     weeklies.sort(key=lambda p: p["week_number"], reverse=True)
     oop_by_week = {p["week_number"]: p["playlist_uri"] for p in (playlists or [])
                    if p.get("type") == "outofplaylist" and p.get("week_number")}
-    scans = [h for h in (history or []) if h.get("completed") and not h.get("partial_scan")]
-    scans.sort(key=lambda h: h.get("end_date", ""), reverse=True)
     measured = set((cov.get("weeks") or {}).keys())
+    valid = _valid_weekly_scans(history, min_tracks)
+    unmeasured = [p for p in weeklies if str(p["week_number"]) not in measured]
 
-    unmeasured = (p for p in weeklies if str(p["week_number"]) not in measured)
     backlog = []
-    for scan in scans:
-        p = next(unmeasured, None)
-        if p is None:
-            break
-        backlog.append({
-            "week_number": p["week_number"],
-            "playlist_uri": p["playlist_uri"],
-            "playlist_name": p.get("name"),
-            "oop_playlist_uri": oop_by_week.get(p["week_number"]),
-            "proposed_scan_id": scan["id"],
-            "proposed_scan_dates": f"{scan.get('start_date')} .. {scan.get('end_date')}",
-            "proposed_scan_tracks": scan.get("track_count"),
-        })
+    if unmeasured and valid:
+        anchor_week = weeklies[0]["week_number"]       # newest week OVERALL ↔ newest valid scan
+        anchor_end = valid[0]["_end"]                   # (stable even if the newest week is measured)
+        oldest_end = valid[-1]["_end"]
+        used = set()
+        for p in unmeasured:
+            wk = p["week_number"]
+            expected = anchor_end - datetime.timedelta(weeks=(anchor_week - wk))
+            if expected < oldest_end - datetime.timedelta(days=3):
+                break                                  # older than any valid scan → seed territory
+            best_i, best_d = None, 4                    # accept a match within ±3 days
+            for i, s in enumerate(valid):
+                if i in used:
+                    continue
+                d = abs((s["_end"] - expected).days)
+                if d < best_d:
+                    best_i, best_d = i, d
+            row = {"week_number": wk, "playlist_uri": p["playlist_uri"],
+                   "playlist_name": p.get("name"), "oop_playlist_uri": oop_by_week.get(wk),
+                   "proposed_scan_id": None, "proposed_scan_dates": None, "proposed_scan_tracks": None}
+            if best_i is not None:
+                s = valid[best_i]
+                used.add(best_i)
+                row.update({"proposed_scan_id": s["id"],
+                            "proposed_scan_dates": f"{s.get('start_date')} .. {s.get('end_date')}",
+                            "proposed_scan_tracks": s.get("track_count")})
+            backlog.append(row)
     return {
         "measured_count": len(measured),
         "measured": sorted(measured, key=lambda w: int(w) if str(w).isdigit() else 0,
                            reverse=True)[:12],
         "backlog": backlog,
-        "available_scans": len(scans),
+        "available_scans": len(valid),
+        "min_tracks": min_tracks,
         "scans": [{"id": s["id"], "dates": f"{s.get('start_date')} .. {s.get('end_date')}",
-                   "tracks": s.get("track_count")} for s in scans[:20]],
+                   "tracks": s.get("track_count")} for s in valid[:20]],
         "latest_week": weeklies[0]["week_number"] if weeklies else None,
     }

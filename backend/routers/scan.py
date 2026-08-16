@@ -31,6 +31,11 @@ def resolve_dynamic_dates(settings_dict: dict) -> dict:
     return settings_dict
 
 
+DEFAULT_FORBIDDEN_KEYWORDS = [" live ", "session", "לייב", "קאבר", "a capella", "acapella", "FSOE",
+                              "techno", "extended", "sped up", "speed up", "intro", "slow",
+                              "remaster", "instrumental"]
+
+
 class ScanSettings(BaseModel):
     start_date: str
     end_date: str
@@ -39,11 +44,11 @@ class ScanSettings(BaseModel):
     min_liked_songs: int = 1
     album_types: List[str] = ['single']
     refresh_artists: bool = False
-    
+
     # Advanced Filters
     min_duration_sec: int = 90
     max_duration_sec: int = 270
-    forbidden_keywords: List[str] = [" live ", "session", "לייב", "קאבר", "a capella", "acapella", "FSOE", "techno", "extended", "sped up", "speed up", "intro", "slow", "remaster", "instrumental"]
+    forbidden_keywords: List[str] = DEFAULT_FORBIDDEN_KEYWORDS
     exclude_artists: List[str] = [] # List of Artist names or IDs to skip
 
     # Artist selection (optional — null means scan all)
@@ -59,6 +64,7 @@ class AutomationConfig(BaseModel):
     settings: ScanSettings
 
 from ..core.automation import automation_manager
+from ..core.storage_manager import storage
 
 @router.get("/automation/config")
 def get_automation_config():
@@ -68,6 +74,50 @@ def get_automation_config():
 def save_automation_config(config: AutomationConfig):
     automation_manager.save_config(config.dict())
     return {"status": "saved", "config": config}
+
+
+# ---- Dashboard filter settings -------------------------------------------------
+# Stored server-side so they survive a refresh and follow the user to another
+# browser. They used to live only in the browser's localStorage, where the
+# automation-config load overwrote them on every page load.
+
+USER_SETTINGS_FILE = "cache/user_settings.json"
+
+
+class UserFilterSettings(BaseModel):
+    min_duration_sec: int = 90
+    max_duration_sec: int = 270
+    forbidden_keywords: List[str] = DEFAULT_FORBIDDEN_KEYWORDS
+    exclude_artists: List[str] = []
+    album_types: List[str] = ['single']
+    include_followed: bool = True
+    include_liked_songs: bool = False
+    min_liked_songs: int = 1
+
+
+_USER_SETTINGS_KEYS = tuple(UserFilterSettings().dict().keys())
+
+
+@router.get("/settings")
+def get_user_settings():
+    """saved=False means nothing was ever stored — the settings returned are a seed
+    (the automation config's filters if one exists, else the defaults), and the
+    frontend may still migrate a legacy localStorage copy over them."""
+    stored = storage.load_json(USER_SETTINGS_FILE)
+    if stored:
+        return {"saved": True, "settings": UserFilterSettings(**stored).dict()}
+
+    auto = automation_manager.load_config().get("settings") or {}
+    # Empty lists would seed *over* the defaults with nothing — skip them.
+    seed = {k: v for k, v in auto.items() if k in _USER_SETTINGS_KEYS and v not in (None, [])}
+    return {"saved": False, "settings": UserFilterSettings(**seed).dict()}
+
+
+@router.post("/settings")
+def save_user_settings(body: UserFilterSettings):
+    if not storage.save_json(USER_SETTINGS_FILE, body.dict()):
+        raise HTTPException(status_code=503, detail="Could not persist settings")
+    return {"saved": True, "settings": body}
 
 @router.post("/automation/run")
 async def run_automation_headless(background_tasks: BackgroundTasks):

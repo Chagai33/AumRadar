@@ -61,6 +61,46 @@ interface CheckpointInfo {
     blocked_remaining?: number;
 }
 
+interface FilterSettings {
+    min_duration_sec: number;
+    max_duration_sec: number;
+    forbidden_keywords: string[];
+    exclude_artists: string[];
+    album_types: string[];
+    include_followed: boolean;
+    include_liked_songs: boolean;
+    min_liked_songs: number;
+}
+
+// The keywords textarea wraps a keyword in quotes when its leading/trailing spaces
+// matter — the backend matches by substring, so `" live "` must not also hit
+// "Olivia". parse strips the quotes for the API, serialize puts them back. Without
+// the serialize half, a save→load round-trip drops the spaces and silently widens
+// the keyword.
+const parseKeywords = (text: string): string[] =>
+    text.split('\n')
+        .map(line => line.replace(/\r/g, '').trim())
+        .map(line => (line.length >= 2 && line.startsWith('"') && line.endsWith('"') ? line.slice(1, -1) : line))
+        .filter(k => k.length > 0);
+
+const serializeKeywords = (keywords: string[]): string =>
+    keywords.map(k => (k === k.trim() ? k : `"${k}"`)).join('\n');
+
+const parseLines = (text: string): string[] =>
+    text.split('\n').map(s => s.replace(/\r/g, '').trim()).filter(s => s.length > 0);
+
+// Stable key order so a saved snapshot can be compared against the live form.
+const canonicalSettings = (s: FilterSettings): string => JSON.stringify({
+    min_duration_sec: s.min_duration_sec,
+    max_duration_sec: s.max_duration_sec,
+    forbidden_keywords: s.forbidden_keywords,
+    exclude_artists: s.exclude_artists,
+    album_types: s.album_types,
+    include_followed: s.include_followed,
+    include_liked_songs: s.include_liked_songs,
+    min_liked_songs: s.min_liked_songs,
+});
+
 export const Dashboard: React.FC = () => {
     // auth (user / logout) is handled by NavBar + ProtectedRoute
 
@@ -147,41 +187,97 @@ export const Dashboard: React.FC = () => {
     const [autoExcludeAlbums, setAutoExcludeAlbums] = useState(true);
     const [autoRefreshArtists, setAutoRefreshArtists] = useState(false);
     const [settingsLoaded, setSettingsLoaded] = useState(false);
+    const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
+    const [savingSettings, setSavingSettings] = useState(false);
+    const [settingsError, setSettingsError] = useState<string | null>(null);
 
-    // Load defaults from LocalStorage on mount
-    useEffect(() => {
-        const saved = localStorage.getItem('aum_settings');
-        if (saved) {
-            try {
-                const p = JSON.parse(saved);
-                if (p.minDurationSec !== undefined) setMinDurationSec(p.minDurationSec);
-                if (p.maxDurationSec !== undefined) setMaxDurationSec(p.maxDurationSec);
-                if (p.forbiddenKeywords !== undefined) setForbiddenKeywords(p.forbiddenKeywords);
-                if (p.excludedArtists !== undefined) setExcludedArtists(p.excludedArtists);
-                if (p.albumTypes !== undefined) setAlbumTypes(p.albumTypes);
-                if (p.includeFollowed !== undefined) setIncludeFollowed(p.includeFollowed);
-                if (p.includeLiked !== undefined) setIncludeLiked(p.includeLiked);
-                if (p.minLikedSongs !== undefined) setMinLikedSongs(p.minLikedSongs);
-            } catch (e) { console.error("Error loading settings", e); }
+    // Filter settings live on the server (GET/POST /api/settings) and are saved
+    // explicitly with the Save Filters button, so they survive a refresh and follow
+    // the user to another browser.
+    const buildSettingsPayload = (): FilterSettings => ({
+        min_duration_sec: minDurationSec,
+        max_duration_sec: maxDurationSec,
+        forbidden_keywords: parseKeywords(forbiddenKeywords),
+        exclude_artists: parseLines(excludedArtists),
+        album_types: albumTypes,
+        include_followed: includeFollowed,
+        include_liked_songs: includeLiked,
+        min_liked_songs: minLikedSongs,
+    });
+
+    const applySettings = (s: FilterSettings) => {
+        setMinDurationSec(s.min_duration_sec);
+        setMaxDurationSec(s.max_duration_sec);
+        setForbiddenKeywords(serializeKeywords(s.forbidden_keywords));
+        setExcludedArtists(s.exclude_artists.join('\n'));
+        setAlbumTypes(s.album_types);
+        setIncludeFollowed(s.include_followed);
+        setIncludeLiked(s.include_liked_songs);
+        setMinLikedSongs(s.min_liked_songs);
+    };
+
+    // savedSnapshot === null means the load failed — allow a save so the user can
+    // push what's on screen once the API is back.
+    const settingsDirty = settingsLoaded
+        && (savedSnapshot === null || canonicalSettings(buildSettingsPayload()) !== savedSnapshot);
+
+    const saveFilterSettings = async () => {
+        setSavingSettings(true);
+        setSettingsError(null);
+        const payload = buildSettingsPayload();
+        try {
+            await axios.post('/api/settings', payload);
+            applySettings(payload); // show exactly what was stored (blanks dropped, quotes normalized)
+            setSavedSnapshot(canonicalSettings(payload));
+        } catch (e: any) {
+            setSettingsError(e.response?.data?.detail || e.message);
+        } finally {
+            setSavingSettings(false);
         }
-        setSettingsLoaded(true);
-    }, []);
+    };
 
-    // Autosave Settings to LocalStorage
+    // Load filter settings from the server on mount
     useEffect(() => {
-        if (!settingsLoaded) return; // Don't save before loading
+        const legacy = localStorage.getItem('aum_settings'); // pre-server-side copy
+        axios.get('/api/settings').then(res => {
+            const server: FilterSettings = res.data.settings;
 
-        const timeoutId = setTimeout(() => {
-            const settings = {
-                minDurationSec, maxDurationSec, forbiddenKeywords, excludedArtists,
-                albumTypes, includeFollowed, includeLiked, minLikedSongs
-            };
-            localStorage.setItem('aum_settings', JSON.stringify(settings));
-            // console.log("Settings autosaved");
-        }, 1000); // 1-second debounce to avoid spamming storage while typing
+            // Nothing stored server-side yet and the browser still holds a copy →
+            // that copy is the newest thing we have. Migrate it once, then drop it.
+            if (!res.data.saved && legacy) {
+                try {
+                    const p = JSON.parse(legacy);
+                    const merged: FilterSettings = {
+                        min_duration_sec: p.minDurationSec ?? server.min_duration_sec,
+                        max_duration_sec: p.maxDurationSec ?? server.max_duration_sec,
+                        forbidden_keywords: p.forbiddenKeywords !== undefined ? parseKeywords(p.forbiddenKeywords) : server.forbidden_keywords,
+                        exclude_artists: p.excludedArtists !== undefined ? parseLines(p.excludedArtists) : server.exclude_artists,
+                        album_types: p.albumTypes ?? server.album_types,
+                        include_followed: p.includeFollowed ?? server.include_followed,
+                        include_liked_songs: p.includeLiked ?? server.include_liked_songs,
+                        min_liked_songs: p.minLikedSongs ?? server.min_liked_songs,
+                    };
+                    applySettings(merged);
+                    setSavedSnapshot(canonicalSettings(merged));
+                    // Keep the legacy key until the write lands, so a failure retries next load.
+                    axios.post('/api/settings', merged)
+                        .then(() => localStorage.removeItem('aum_settings'))
+                        .catch(e => console.error("Settings migration failed", e));
+                    setSettingsLoaded(true);
+                    return;
+                } catch (e) { console.error("Could not read legacy settings", e); }
+            }
 
-        return () => clearTimeout(timeoutId);
-    }, [minDurationSec, maxDurationSec, forbiddenKeywords, excludedArtists, albumTypes, includeFollowed, includeLiked, minLikedSongs, settingsLoaded]);
+            applySettings(server);
+            setSavedSnapshot(canonicalSettings(server));
+            setSettingsLoaded(true);
+        }).catch(e => {
+            // Leave the form on its defaults and let the user save once the API is back.
+            console.error("Settings load error", e);
+            setSettingsError('Could not load saved settings');
+            setSettingsLoaded(true);
+        });
+    }, []);
 
     // Load Automation Config
     useEffect(() => {
@@ -192,14 +288,10 @@ export const Dashboard: React.FC = () => {
                 if (data.run_day) setAutoDay(data.run_day);
                 if (data.run_time) setAutoTime(data.run_time);
 
-                // Pre-fill Advanced Filters if saved
+                // Automation-only fields. The advanced filters deliberately are NOT
+                // read back from here — this used to overwrite the user's own
+                // keywords/artists on every page load.
                 if (data.settings) {
-                    if (data.settings.exclude_artists?.length > 0) {
-                        setExcludedArtists(data.settings.exclude_artists.join('\n'));
-                    }
-                    if (data.settings.forbidden_keywords?.length > 0) {
-                        setForbiddenKeywords(data.settings.forbidden_keywords.join('\n'));
-                    }
                     if (data.settings.exclude_albums !== undefined) setAutoExcludeAlbums(data.settings.exclude_albums);
                     if (data.settings.refresh_artists !== undefined) setAutoRefreshArtists(data.settings.refresh_artists);
                     if (data.settings.start_date === 'LAST7') setAutoDateMode('last7');
@@ -378,8 +470,8 @@ export const Dashboard: React.FC = () => {
                 refresh_artists: refreshArtists,
                 min_duration_sec: minDurationSec,
                 max_duration_sec: maxDurationSec,
-                                                forbidden_keywords: forbiddenKeywords.split('\n').map(k => { k = k.replace('\r', ''); return k.startsWith('"') && k.endsWith('"') && k.length >= 2 ? k.slice(1, -1) : k.trim(); }).filter(k => k.length > 0),
-                exclude_artists: excludedArtists.split('\n').map(s => s.trim()).filter(s => s.length > 0),
+                forbidden_keywords: parseKeywords(forbiddenKeywords),
+                exclude_artists: parseLines(excludedArtists),
                 selected_artist_ids: selectedArtistIds ? Array.from(selectedArtistIds) : null,
             });
 
@@ -1137,10 +1229,24 @@ export const Dashboard: React.FC = () => {
                                                         />
                                                     </div>
 
-                                                    <div className="md:col-span-2 mt-2 pt-2 flex justify-end">
-                                                        <span className="text-[10px] text-gray-600 flex items-center gap-1.5 opacity-70">
-                                                            <Save className="w-3 h-3" /> Settings auto-saved
-                                                        </span>
+                                                    <div className="md:col-span-2 mt-2 pt-2 flex justify-end items-center gap-4">
+                                                        {settingsError ? (
+                                                            <span className="text-[11px] text-red-400">{settingsError}</span>
+                                                        ) : settingsDirty ? (
+                                                            <span className="text-[11px] text-yellow-500">Unsaved changes</span>
+                                                        ) : savedSnapshot !== null && (
+                                                            <span className="text-[10px] text-gray-500 flex items-center gap-1.5">
+                                                                <Check className="w-3 h-3 text-[#1DB954]" /> Saved
+                                                            </span>
+                                                        )}
+                                                        <button
+                                                            onClick={saveFilterSettings}
+                                                            disabled={savingSettings || !settingsDirty}
+                                                            className="flex items-center gap-2 bg-[#1DB954] hover:bg-[#1ed760] disabled:bg-[#282828] disabled:text-gray-600 text-black font-bold text-sm px-4 py-2 rounded-lg transition-colors"
+                                                        >
+                                                            <Save className="w-3.5 h-3.5" />
+                                                            {savingSettings ? 'Saving…' : 'Save Filters'}
+                                                        </button>
                                                     </div>
                                                 </div>
                                             </div>
@@ -1785,8 +1891,8 @@ export const Dashboard: React.FC = () => {
                                                             refresh_artists: autoRefreshArtists,
                                                             min_duration_sec: minDurationSec,
                                                             max_duration_sec: maxDurationSec,
-                                                            forbidden_keywords: forbiddenKeywords.split('\n').map(k => { k = k.replace('\r', ''); return k.startsWith('"') && k.endsWith('"') && k.length >= 2 ? k.slice(1, -1) : k.trim(); }).filter(k => k.length > 0),
-                                                            exclude_artists: excludedArtists.split('\n').map(s => s.trim()).filter(s => s.length > 0),
+                                                            forbidden_keywords: parseKeywords(forbiddenKeywords),
+                                                            exclude_artists: parseLines(excludedArtists),
                                                             exclude_albums: autoExcludeAlbums,
                                                         }
                                                     });

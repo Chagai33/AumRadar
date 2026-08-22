@@ -330,12 +330,27 @@ def _playlist_keys(sp, playlist_uri: str, *, required=True) -> tuple:
     return keys, items
 
 
+IN_PROGRESS_MARK = "❤"   # ❤ — the user marks a weekly playlist that is still being
+                              # built as e.g. "Week#325❤️❤️❤️", and only renames it to the
+                              # closed form ("彡 <title> 彡 Week#325") when he finalises it
+                              # on the weekend. Measuring it before then would score a
+                              # half-filled playlist as if it were the finished week.
+
+
+def is_closed_week(playlist: dict) -> bool:
+    """A weekly playlist is measurable only once it is CLOSED. An unfinished one still
+    carries the heart marker in its name."""
+    return IN_PROGRESS_MARK not in (playlist.get("name") or "")
+
+
 MIN_MATCH = 0.6            # a scan is the playlist's source only if it CONTAINS at least
                            # this share of it. Real pairings measure ~1.0 (the playlist is
                            # built out of the scan); a wrong pairing measures ~0.0. The gate
                            # sits far from both so small gaps — a track pulled from Spotify,
                            # an ISRC that moved — never reject a genuine week.
-MAX_CANDIDATES = 4         # how many scans to try before giving up on a week.
+MAX_CANDIDATES = 10        # how many scans to try before giving up on a week. History
+                           # holds a handful of legitimate weekly scans, so this covers
+                           # all of them — the loop stops at the first exact match.
 
 
 class NoMatchingScan(Exception):
@@ -363,15 +378,18 @@ def _match_ratio(playlist_items, scan_keys) -> float:
 
 
 def _candidate_scan_ids(proposed, history, week_no=None):
-    """The scans to try for a week, best guess first: the proposed link, then the other
-    legitimate weekly scans NEAREST IN TIME to it. Date only ORDERS the search — the
-    content match below is what decides, so a wrong proposal self-corrects instead of
-    writing a bogus week."""
+    """Every legitimate weekly scan, best guess first — the search space for "which scan
+    is this playlist built from?".
+
+    There is deliberately NO date arithmetic deciding anything here. The week number is
+    a running counter the user assigns, the scan runs on Friday, and the playlist is
+    closed the following weekend — an offset that no anchor can infer reliably (trying
+    to cost week 321 its measurement entirely). Since a playlist is built out of exactly
+    one scan, the content match is both cheaper to trust and exact. `proposed` is only a
+    hint about where to start looking; recency is the fallback order because unmeasured
+    weeks are recent ones."""
+    valid = _valid_weekly_scans(history, MIN_WEEK_TRACKS)   # already newest-first
     out = [proposed] if proposed else []
-    valid = _valid_weekly_scans(history, MIN_WEEK_TRACKS)
-    anchor = next((v["_end"] for v in valid if v["id"] == proposed), None)
-    if anchor is not None:
-        valid = sorted(valid, key=lambda v: abs((v["_end"] - anchor).days))
     for v in valid:
         if v["id"] not in out:
             out.append(v["id"])
@@ -379,7 +397,7 @@ def _candidate_scan_ids(proposed, history, week_no=None):
 
 
 def measure_and_write(sp, week_no, playlist_uri, scan_id, oop_playlist_uri=None,
-                      source="weekly", history=None) -> dict:
+                      source="weekly", history=None, scan_cache=None) -> dict:
     """Orchestrate one week's measurement: pull the official Week#N playlist, find the
     scan that ACTUALLY contains it, fold via measure_week, and persist.
 
@@ -392,12 +410,18 @@ def measure_and_write(sp, week_no, playlist_uri, scan_id, oop_playlist_uri=None,
     if not weekly_items:
         raise NoMatchingScan(f"Week {week_no}: the weekly playlist is empty — nothing to measure.")
 
+    # A multi-week batch searches the same handful of scans over and over; the caller
+    # passes a dict so each snapshot is fetched from storage at most once per request.
+    cache = scan_cache if scan_cache is not None else {}
     best_id, best_ratio, best_tracks = None, 0.0, None
     for cand in _candidate_scan_ids(scan_id, history or [], week_no):
-        tracks = _load_scan_releases(cand)
+        if cand not in cache:
+            t = _load_scan_releases(cand)
+            cache[cand] = (t, _scan_keys(t))
+        tracks, keys = cache[cand]
         if not tracks:
             continue
-        ratio = _match_ratio(weekly_items, _scan_keys(tracks))
+        ratio = _match_ratio(weekly_items, keys)
         if ratio > best_ratio:
             best_id, best_ratio, best_tracks = cand, ratio, tracks
         if ratio >= 0.999:
@@ -411,7 +435,7 @@ def measure_and_write(sp, week_no, playlist_uri, scan_id, oop_playlist_uri=None,
     oop_keys = _playlist_keys(sp, oop_playlist_uri, required=False)[0] if oop_playlist_uri else set()
     events, summary = measure_week(best_tracks, weekly_keys, oop_keys, week_no)
     summary = {**summary, "playlist_tracks": len(weekly_items),
-               "match_ratio": round(best_ratio, 4)}
+               "match_ratio": round(best_ratio, 4), "matched_scan": best_id}
     write_week(week_no, events, summary, scan_id=best_id, playlist_uri=playlist_uri,
                source=source)
     return summary
@@ -451,59 +475,54 @@ def _valid_weekly_scans(history, min_tracks) -> list:
 
 
 def coverage_state(history, playlists, cov, min_tracks=MIN_WEEK_TRACKS) -> dict:
-    """Coverage view + the multi-week backlog with PROPOSED links. Pure.
+    """Coverage view + the backlog of weeks still to measure. Pure.
 
-    FIX (2026-08-09): only LEGITIMATE weekly scans are offered (§7: completed +
-    non-partial + ~one-week span + ≥min_tracks) — a 1-day, multi-week, or tiny scan is
-    never a measurement source (else the denominator is partial/wrong). And a scan is
-    matched to a week by **DATE** (anchor the newest unmeasured week to the newest valid
-    scan, then align each week to the scan within ±3 days of its expected weekly slot) —
-    not by naive recency-order, which mis-paired weeks with unrelated scans. A week with
-    no valid scan near its slot gets NO proposal (needs a real scan / stays a gap). The
-    user still confirms/overrides per row in the UI (propose-and-confirm)."""
+    No scan is PROPOSED here and none has to be picked in the UI. A weekly playlist is
+    built out of exactly one scan, so the scan that contains it is a fact to be looked
+    up, not a choice to be made — measure_and_write finds it by content. Every date
+    heuristic tried before this got weeks wrong in a way the user then had to correct
+    by hand (2026-08-22).
+
+    Two rules decide what is measurable:
+    - only LEGITIMATE weekly scans count as sources (completed + non-partial + ~one-week
+      span + >= min_tracks), so a 1-day, multi-week or tiny run never becomes a partial
+      denominator;
+    - only CLOSED weeks are offered — one still carrying the ❤ marker is mid-build and
+      would score as a half-filled week.
+
+    The backlog is capped at a little more than the number of scans in history: a week
+    older than every scan can never be matched, and listing hundreds of dead weeks helps
+    nobody."""
     weeklies = [p for p in (playlists or []) if p.get("type") == "weekly" and p.get("week_number")]
     weeklies.sort(key=lambda p: p["week_number"], reverse=True)
+    closed = [p for p in weeklies if is_closed_week(p)]
+    in_progress = [p for p in weeklies if not is_closed_week(p)]
     oop_by_week = {p["week_number"]: p["playlist_uri"] for p in (playlists or [])
                    if p.get("type") == "outofplaylist" and p.get("week_number")}
     measured = set((cov.get("weeks") or {}).keys())
     valid = _valid_weekly_scans(history, min_tracks)
-    unmeasured = [p for p in weeklies if str(p["week_number"]) not in measured]
 
     backlog = []
-    if unmeasured and valid:
-        # A Week#N playlist is closed from the PREVIOUS week's scan (user's fixed
-        # routine), so at any moment there is one MORE scan than published playlist:
-        # the newest scan has not become a playlist yet. Anchoring "newest week ↔
-        # newest scan" therefore shifts every proposal by a week and pairs each week
-        # with an unrelated scan — the 2026-08-22 bug. Step the anchor back one week.
-        # This only has to be CLOSE: measure_and_write verifies the pairing by content
-        # and self-corrects to a neighbouring scan if this guess is off.
-        anchor_week = weeklies[0]["week_number"]       # newest week OVERALL
-        anchor_end = valid[0]["_end"] - datetime.timedelta(days=7)
-        oldest_end = valid[-1]["_end"]
-        used = set()
-        for p in unmeasured:
-            wk = p["week_number"]
-            expected = anchor_end - datetime.timedelta(weeks=(anchor_week - wk))
-            if expected < oldest_end - datetime.timedelta(days=3):
-                break                                  # older than any valid scan → seed territory
-            best_i, best_d = None, 4                    # accept a match within ±3 days
-            for i, s in enumerate(valid):
-                if i in used:
-                    continue
-                d = abs((s["_end"] - expected).days)
-                if d < best_d:
-                    best_i, best_d = i, d
-            row = {"week_number": wk, "playlist_uri": p["playlist_uri"],
-                   "playlist_name": p.get("name"), "oop_playlist_uri": oop_by_week.get(wk),
-                   "proposed_scan_id": None, "proposed_scan_dates": None, "proposed_scan_tracks": None}
-            if best_i is not None:
-                s = valid[best_i]
-                used.add(best_i)
-                row.update({"proposed_scan_id": s["id"],
-                            "proposed_scan_dates": f"{s.get('start_date')} .. {s.get('end_date')}",
-                            "proposed_scan_tracks": s.get("track_count")})
-            backlog.append(row)
+    if valid:
+        for p in closed:
+            if str(p["week_number"]) in measured:
+                continue
+            backlog.append({
+                "week_number": p["week_number"],
+                "playlist_uri": p["playlist_uri"],
+                "playlist_name": p.get("name"),
+                "playlist_tracks": p.get("track_count"),
+                "oop_playlist_uri": oop_by_week.get(p["week_number"]),
+                # Compatibility shim for a frontend build that predates auto-matching:
+                # it treats a row without `proposed_scan_id` as unmeasurable and greys it
+                # out. The value is a placeholder only — measure_and_write re-derives the
+                # real scan from the playlist's contents and ignores whatever is sent.
+                "proposed_scan_id": valid[0]["id"],
+                "proposed_scan_dates": f"{valid[0].get('start_date')} .. {valid[0].get('end_date')}",
+                "proposed_scan_tracks": valid[0].get("track_count"),
+            })
+            if len(backlog) >= len(valid) + 2:
+                break
     return {
         "measured_count": len(measured),
         "measured": sorted(measured, key=lambda w: int(w) if str(w).isdigit() else 0,
@@ -514,4 +533,6 @@ def coverage_state(history, playlists, cov, min_tracks=MIN_WEEK_TRACKS) -> dict:
         "scans": [{"id": s["id"], "dates": f"{s.get('start_date')} .. {s.get('end_date')}",
                    "tracks": s.get("track_count")} for s in valid[:20]],
         "latest_week": weeklies[0]["week_number"] if weeklies else None,
+        "in_progress": [{"week_number": p["week_number"], "name": p.get("name")}
+                        for p in in_progress],
     }

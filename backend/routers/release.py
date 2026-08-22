@@ -29,7 +29,9 @@ RECON_SNAPSHOT_FILE = "cache/recon_playlists.json"
 class MeasureLink(BaseModel):
     week_number: int
     playlist_uri: str
-    scan_id: str
+    # Optional: the backend finds the scan that actually contains the playlist. A value
+    # here is only a hint about where to start the search, never a decision.
+    scan_id: Optional[str] = None
     oop_playlist_uri: Optional[str] = None
 
 
@@ -78,6 +80,7 @@ def measure(request: Request, body: MeasureReq):
     # The scan index lets measure_and_write verify the proposed link against the
     # playlist's actual contents and fall back to a neighbouring scan if it is wrong.
     history = scanner.get_history_index()
+    scan_cache = {}          # one snapshot fetch per scan for the whole batch
     out, remaining, start = [], [], time.time()
     for i, lk in enumerate(body.links):
         if time.time() - start > 20.0:
@@ -86,7 +89,8 @@ def measure(request: Request, body: MeasureReq):
         try:
             summary = release.measure_and_write(sp, lk.week_number, lk.playlist_uri,
                                                 lk.scan_id, lk.oop_playlist_uri,
-                                                source="weekly", history=history)
+                                                source="weekly", history=history,
+                                                scan_cache=scan_cache)
             out.append({"week_number": lk.week_number, "ok": True, **summary})
         except (release.NoMatchingScan, release.PlaylistUnreadable) as e:
             # NOT an error to bury: the week is deliberately left unmeasured rather

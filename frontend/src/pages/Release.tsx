@@ -4,22 +4,31 @@ import axios from 'axios';
 import { NavBar } from '../components/NavBar';
 
 // Artist Health Engine — Stage 4 phase 2c: the weekly-measurement coverage tracker.
-// Each week, once the official 彡…Week#N playlist is published, we measure "what was
-// released × what entered" → hit/miss. This page shows what's measured, and a BACKLOG
-// of unmeasured weeks (if you didn't confirm for a while, they all show together) each
-// with a proposed scan↔playlist link you confirm — one or many at once.
+// Each week, once the official 彡…Week#N playlist is CLOSED, we measure "what was
+// released × what entered" → hit/miss.
+//
+// There is no scan to pick here. A weekly playlist is built out of exactly one scan,
+// so the backend looks up which one actually contains it and reports the match — the
+// old "choose a scan" dropdown made the user do by hand what is a verifiable fact, and
+// got weeks wrong when its date guess was off. Weeks still marked ❤ are mid-build and
+// are not offered at all.
 
 interface BacklogRow {
   week_number: number; playlist_uri: string; playlist_name: string | null;
-  oop_playlist_uri: string | null; proposed_scan_id: string | null;
-  proposed_scan_dates: string | null; proposed_scan_tracks: number | null;
+  playlist_tracks: number | null; oop_playlist_uri: string | null;
 }
 interface ScanOpt { id: string; dates: string; tracks: number; }
+interface InProgress { week_number: number; name: string | null; }
 interface Coverage {
   measured_count: number; measured: string[]; backlog: BacklogRow[];
   available_scans: number; scans: ScanOpt[]; latest_week: number | null; min_tracks?: number;
+  in_progress?: InProgress[];
 }
-interface WeekResult { week_number: number; ok: boolean; error?: string; releases?: number; hits?: number; shadow?: number; misses?: number; albums?: number; }
+interface WeekResult {
+  week_number: number; ok: boolean; skipped?: boolean; error?: string;
+  releases?: number; hits?: number; shadow?: number; misses?: number; albums?: number;
+  matched_scan?: string; match_ratio?: number; playlist_tracks?: number;
+}
 interface Flooder { artist_uri: string; artist_id: string; artist: string; image: string; genres: string; followers: number; spotify_url: string; efficiency: number; releases: number; hits: number; primary_releases: number; }
 interface Quality { flooders: Flooder[]; flooder_count: number; measured_weeks: number; scored_artists: number; current_week: number | null; note?: string; }
 const QDEF = { half_life: 26, secondary_weight: 0.3, shadow_factor: 0.05, smoothing_k: 4, smoothing_prior: 0.3, min_primary: 4, threshold: 0.15 };
@@ -28,7 +37,6 @@ export const Release: React.FC = () => {
   const [data, setData] = useState<Coverage | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
-  const [chosenScan, setChosenScan] = useState<Record<number, string>>({});
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<WeekResult[]>([]);
@@ -43,10 +51,8 @@ export const Release: React.FC = () => {
       const r = await axios.get('/api/release/coverage');
       const cov: Coverage = r.data;
       setData(cov); setErr('');
-      const cs: Record<number, string> = {};
-      (cov.backlog || []).forEach(b => { if (b.proposed_scan_id) cs[b.week_number] = b.proposed_scan_id; });
-      setChosenScan(cs);
-      setSelected(new Set((cov.backlog || []).filter(b => b.proposed_scan_id).map(b => b.week_number)));
+      // every offered week is measurable — the backend finds its scan itself
+      setSelected(new Set((cov.backlog || []).map(b => b.week_number)));
     } catch (e: any) {
       setErr(e.response?.status === 401 ? 'Please log in.' : (e.response?.data?.detail || e.message));
     }
@@ -56,10 +62,11 @@ export const Release: React.FC = () => {
   const toggle = (wk: number) => setSelected(prev => { const n = new Set(prev); n.has(wk) ? n.delete(wk) : n.add(wk); return n; });
 
   const measure = async () => {
-    const rows = (data?.backlog || []).filter(b => selected.has(b.week_number) && chosenScan[b.week_number]);
+    const rows = (data?.backlog || []).filter(b => selected.has(b.week_number));
+    // no scan_id: the backend matches the playlist to the scan that contains it
     let links: any[] = rows.map(b => ({
       week_number: b.week_number, playlist_uri: b.playlist_uri,
-      scan_id: chosenScan[b.week_number], oop_playlist_uri: b.oop_playlist_uri,
+      oop_playlist_uri: b.oop_playlist_uri,
     }));
     if (!links.length) return;
     setBusy(true); setResults([]);
@@ -99,8 +106,7 @@ export const Release: React.FC = () => {
   };
 
   const backlog = data?.backlog || [];
-  const measurable = backlog.filter(b => b.proposed_scan_id).length;
-  const needScan = backlog.length - measurable;
+  const measurable = backlog.length;
 
   if (loading) return <div className="min-h-screen bg-[#121212] text-zinc-300 flex items-center justify-center">Loading coverage…</div>;
 
@@ -135,10 +141,25 @@ export const Release: React.FC = () => {
             {results.map(r => (
               <div key={r.week_number} className="text-xs">
                 {r.ok
-                  ? <>Week #{r.week_number}: <b className="text-emerald-400">{r.hits}</b> entered · {r.shadow} shadow · <b className="text-red-400">{r.misses}</b> missed{r.albums ? ` · ${r.albums} albums` : ''}</>
-                  : <span className="text-red-400">Week #{r.week_number}: {r.error}</span>}
+                  ? <>
+                      Week #{r.week_number}: <b className="text-emerald-400">{r.hits}</b> entered · {r.shadow} shadow · <b className="text-red-400">{r.misses}</b> missed{r.albums ? ` · ${r.albums} albums` : ''}
+                      {r.matched_scan && (
+                        <span className="text-zinc-500"> — matched scan {r.matched_scan}
+                          {typeof r.match_ratio === 'number' ? ` (${Math.round(r.match_ratio * 100)}% of ${r.playlist_tracks} tracks)` : ''}
+                        </span>
+                      )}
+                    </>
+                  : <span className={r.skipped ? 'text-amber-400' : 'text-red-400'}>Week #{r.week_number}: {r.error}</span>}
               </div>
             ))}
+          </div>
+        )}
+
+        {(data?.in_progress || []).length > 0 && (
+          <div className="p-3 rounded-lg border border-zinc-700/60 bg-zinc-800/40 text-xs text-zinc-400">
+            <b className="text-zinc-300">Not measured — still open:</b>{' '}
+            {(data?.in_progress || []).map(w => `#${w.week_number}`).join(', ')}. A week marked ❤ is
+            still being built; it is measured once you close it and drop the marker.
           </div>
         )}
 
@@ -165,36 +186,26 @@ export const Release: React.FC = () => {
           <div className="bg-[#181818] border border-zinc-800 rounded-xl overflow-hidden">
             <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-800">
               <span className="text-sm font-semibold">⚠️ {measurable} week{measurable === 1 ? '' : 's'} ready to measure</span>
-              <span className="text-xs text-zinc-500">{selected.size} selected{needScan ? ` · ${needScan} need a real scan` : ''}</span>
+              <span className="text-xs text-zinc-500">{selected.size} selected</span>
               <button onClick={measure} disabled={busy || selected.size === 0}
                 className="ms-auto px-4 py-1.5 text-sm rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-40 font-semibold">
                 {busy ? 'Measuring…' : `Measure ${selected.size} →`}
               </button>
             </div>
-            {backlog.map(b => {
-              const linkable = !!b.proposed_scan_id;
-              return (
-                <div key={b.week_number} className="flex flex-wrap items-center gap-3 px-4 py-2.5 border-b border-zinc-800/60">
-                  <input type="checkbox" disabled={!linkable} checked={selected.has(b.week_number)}
-                    onChange={() => toggle(b.week_number)} className="w-4 h-4 accent-emerald-500" />
-                  <div className="min-w-0">
-                    <div className="font-medium text-sm">Week #{b.week_number}</div>
-                    <div className="text-xs text-zinc-500 truncate max-w-[240px]">{b.playlist_name || b.playlist_uri}</div>
-                  </div>
-                  <div className="ms-auto flex items-center gap-2 text-xs">
-                    <span className="text-zinc-500">from scan</span>
-                    {linkable ? (
-                      <select value={chosenScan[b.week_number] || ''} onChange={e => setChosenScan(p => ({ ...p, [b.week_number]: e.target.value }))}
-                        className="bg-zinc-800 rounded px-2 py-1 outline-none max-w-[220px]">
-                        {(data?.scans || []).map(s => (
-                          <option key={s.id} value={s.id}>{s.dates} ({s.tracks})</option>
-                        ))}
-                      </select>
-                    ) : <span className="text-amber-400">no scan available — run a scan for this week</span>}
-                  </div>
+            {backlog.map(b => (
+              <div key={b.week_number} className="flex flex-wrap items-center gap-3 px-4 py-2.5 border-b border-zinc-800/60">
+                <input type="checkbox" checked={selected.has(b.week_number)}
+                  onChange={() => toggle(b.week_number)} className="w-4 h-4 accent-emerald-500" />
+                <div className="min-w-0">
+                  <div className="font-medium text-sm">Week #{b.week_number}</div>
+                  <div className="text-xs text-zinc-500 truncate max-w-[240px]">{b.playlist_name || b.playlist_uri}</div>
                 </div>
-              );
-            })}
+                <div className="ms-auto flex items-center gap-2 text-xs text-zinc-500">
+                  {b.playlist_tracks != null && <span>{b.playlist_tracks} tracks</span>}
+                  <span className="text-zinc-600">· scan found automatically</span>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 

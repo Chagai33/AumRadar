@@ -48,6 +48,26 @@ def _isrc_of(track: dict) -> str:
     return (track.get("external_ids") or {}).get("isrc") or track.get("uri")
 
 
+def _track_keys(track: dict) -> set:
+    """BOTH identities of a recording: its ISRC *and* its track URI.
+
+    Matching on one alone is provably lossy in this dataset (2026-08-22 audit):
+    - scans that predate ISRC enrichment (< 2026-08-09) carry NO ISRC at all, so an
+      ISRC-only compare against a playlist can never intersect → every week reads
+      0 entered / all missed.
+    - the same ISRC can appear under two different track URIs in one scan (a focus
+      track shipped on two singles). The ISRC dedup keeps one of them; the playlist
+      may hold the other, so a URI-only compare misses it.
+    Carrying both and intersecting is correct under either gap."""
+    keys = set()
+    isrc = (track.get("external_ids") or {}).get("isrc")
+    if isrc:
+        keys.add(isrc)
+    if track.get("uri"):
+        keys.add(track["uri"])
+    return keys
+
+
 def _artist_uris(track: dict):
     """All artist URIs on the track, in order (primary first), features included —
     IDs come from the scan (verified). Returns [] if none."""
@@ -59,12 +79,13 @@ def _artist_uris(track: dict):
     return out
 
 
-def measure_week(release_tracks, weekly_isrcs, oop_isrcs, week_no) -> tuple:
+def measure_week(release_tracks, weekly_keys, oop_keys, week_no) -> tuple:
     """PURE. Fold one week's scanned releases against that week's playlists → per-artist
-    release_events + a summary. `weekly_isrcs`/`oop_isrcs` are sets of the ISRCs that
-    entered the official weekly / outofplaylist. Returns (events, summary)."""
-    weekly_isrcs = weekly_isrcs or set()
-    oop_isrcs = oop_isrcs or set()
+    release_events + a summary. `weekly_keys`/`oop_keys` are sets holding BOTH the ISRCs
+    and the track URIs that entered the official weekly / outofplaylist (see
+    `_track_keys` for why both). Returns (events, summary)."""
+    weekly_keys = weekly_keys or set()
+    oop_keys = oop_keys or set()
 
     # 1) dedup by ISRC — a single beats an album on the same ISRC (§22.1).
     by_isrc = {}
@@ -92,9 +113,10 @@ def measure_week(release_tracks, weekly_isrcs, oop_isrcs, week_no) -> tuple:
             outcome = "album"            # recorded, NOT scored (§8)
             summary["albums"] += 1
         else:
-            if isrc in weekly_isrcs:
+            tkeys = _track_keys(t)
+            if tkeys & weekly_keys:
                 outcome = "hit"; summary["hits"] += 1
-            elif isrc in oop_isrcs:
+            elif tkeys & oop_keys:
                 outcome = "shadow"; summary["shadow"] += 1
             else:
                 outcome = "miss"; summary["misses"] += 1
@@ -263,44 +285,134 @@ def _load_scan_releases(scan_id: str) -> list:
     return storage.load_json(f"{HISTORY_DIR}/{scan_id}.json", default=[]) or []
 
 
-def _playlist_isrcs(sp, playlist_uri: str) -> set:
-    """The ISRCs currently in a playlist (the 'entered' side). Paginated; a deleted/
-    private playlist (403/404) yields what we have rather than failing the whole run.
-    Uses the session/user client, whose 429s surface with Retry-After (§20.4)."""
+class PlaylistUnreadable(Exception):
+    """A playlist the measurement needs could not be read (deleted / private / no
+    scope). Raised instead of silently returning an empty set — an empty 'entered'
+    side is indistinguishable from 'nothing entered', which is exactly how six weeks
+    of all-missed data got written on 2026-08-22."""
+
+
+def _playlist_keys(sp, playlist_uri: str, *, required=True) -> tuple:
+    """The recordings currently in a playlist (the 'entered' side), as (keys, items).
+    `keys` is the flat union of every item's keys; `items` is one key-set PER recording,
+    which is what a match RATIO must be computed over (a track contributes two keys).
+    Paginated. Uses the session/user client, whose 429s surface with Retry-After (§20.4).
+
+    A 403/404 raises PlaylistUnreadable when `required` (the official weekly playlist —
+    without it there is no measurement); for an optional playlist (outofplaylist) it
+    returns empty so a missing shadow list does not sink the whole week."""
     if not playlist_uri:
-        return set()
+        return set(), []
     pid = _uri_to_id(playlist_uri)
-    isrcs, offset = set(), 0
+    keys, items, offset = set(), [], 0
     while True:
         try:
             page = sp.playlist_items(pid, limit=100, offset=offset, additional_types=("track",),
                                      fields="next,items(track(uri,external_ids(isrc)))")
         except Exception as e:
             if getattr(e, "http_status", None) in (403, 404):
-                return isrcs
+                if required:
+                    raise PlaylistUnreadable(
+                        f"Playlist {pid} could not be read (deleted, private, or missing "
+                        f"scope) — the week cannot be measured.")
+                return set(), []
             raise
-        items = page.get("items") or []
-        for it in items:
+        page_items = page.get("items") or []
+        for it in page_items:
             tr = (it or {}).get("track") or {}
-            isrc = (tr.get("external_ids") or {}).get("isrc") or tr.get("uri")
-            if isrc:
-                isrcs.add(isrc)
-        if len(items) < 100:
+            tkeys = _track_keys(tr)
+            if tkeys:
+                keys |= tkeys
+                items.append(tkeys)
+        if len(page_items) < 100:
             break
         offset += 100
-    return isrcs
+    return keys, items
+
+
+MIN_MATCH = 0.6            # a scan is the playlist's source only if it CONTAINS at least
+                           # this share of it. Real pairings measure ~1.0 (the playlist is
+                           # built out of the scan); a wrong pairing measures ~0.0. The gate
+                           # sits far from both so small gaps — a track pulled from Spotify,
+                           # an ISRC that moved — never reject a genuine week.
+MAX_CANDIDATES = 4         # how many scans to try before giving up on a week.
+
+
+class NoMatchingScan(Exception):
+    """No scan in history actually contains this week's playlist, so there is no valid
+    denominator and the week MUST NOT be written. Recording it anyway is what produced
+    six weeks of fabricated 'all missed' data (weeks 314/320, 2026-08-22) — every artist
+    in them reads as a 0%-efficiency flooder."""
+
+
+def _scan_keys(tracks) -> set:
+    """Flat key set of a whole scan snapshot — the haystack a playlist is matched against."""
+    keys = set()
+    for t in tracks:
+        keys |= _track_keys(t)
+    return keys
+
+
+def _match_ratio(playlist_items, scan_keys) -> float:
+    """Share of the playlist's RECORDINGS that exist in the scan. 1.0 = the scan is
+    provably the playlist's source; ~0.0 = unrelated week."""
+    if not playlist_items:
+        return 0.0
+    hit = sum(1 for tkeys in playlist_items if tkeys & scan_keys)
+    return hit / len(playlist_items)
+
+
+def _candidate_scan_ids(proposed, history, week_no=None):
+    """The scans to try for a week, best guess first: the proposed link, then the other
+    legitimate weekly scans NEAREST IN TIME to it. Date only ORDERS the search — the
+    content match below is what decides, so a wrong proposal self-corrects instead of
+    writing a bogus week."""
+    out = [proposed] if proposed else []
+    valid = _valid_weekly_scans(history, MIN_WEEK_TRACKS)
+    anchor = next((v["_end"] for v in valid if v["id"] == proposed), None)
+    if anchor is not None:
+        valid = sorted(valid, key=lambda v: abs((v["_end"] - anchor).days))
+    for v in valid:
+        if v["id"] not in out:
+            out.append(v["id"])
+    return out[:MAX_CANDIDATES]
 
 
 def measure_and_write(sp, week_no, playlist_uri, scan_id, oop_playlist_uri=None,
-                      source="weekly") -> dict:
-    """Orchestrate one week's measurement: load the scan's releases (history snapshot),
-    pull the official Week#N playlist (+ optional #N Outofplaylist = shadow), fold via
-    measure_week, and persist (week file + coverage). Returns the summary."""
-    releases = _load_scan_releases(scan_id)
-    weekly_isrcs = _playlist_isrcs(sp, playlist_uri)
-    oop_isrcs = _playlist_isrcs(sp, oop_playlist_uri) if oop_playlist_uri else set()
-    events, summary = measure_week(releases, weekly_isrcs, oop_isrcs, week_no)
-    write_week(week_no, events, summary, scan_id=scan_id, playlist_uri=playlist_uri,
+                      source="weekly", history=None) -> dict:
+    """Orchestrate one week's measurement: pull the official Week#N playlist, find the
+    scan that ACTUALLY contains it, fold via measure_week, and persist.
+
+    The pairing is verified by CONTENT, not asserted by date. The playlist is built out
+    of one weekly scan, so the true source contains ~100% of it and every other scan
+    contains ~0% — a separation wide enough that the proposal only needs to be close,
+    not exact. If no candidate clears MIN_MATCH the week is NOT written; it stays an
+    honest gap. Returns the summary plus the scan actually used and its match ratio."""
+    weekly_keys, weekly_items = _playlist_keys(sp, playlist_uri, required=True)
+    if not weekly_items:
+        raise NoMatchingScan(f"Week {week_no}: the weekly playlist is empty — nothing to measure.")
+
+    best_id, best_ratio, best_tracks = None, 0.0, None
+    for cand in _candidate_scan_ids(scan_id, history or [], week_no):
+        tracks = _load_scan_releases(cand)
+        if not tracks:
+            continue
+        ratio = _match_ratio(weekly_items, _scan_keys(tracks))
+        if ratio > best_ratio:
+            best_id, best_ratio, best_tracks = cand, ratio, tracks
+        if ratio >= 0.999:
+            break                      # exact source found; no reason to keep looking
+    if best_ratio < MIN_MATCH:
+        raise NoMatchingScan(
+            f"Week {week_no}: no scan in history contains this playlist "
+            f"(best match {best_ratio:.0%} of {len(weekly_items)} tracks, need "
+            f"{MIN_MATCH:.0%}). The week needs a real weekly scan — leaving it unmeasured.")
+
+    oop_keys = _playlist_keys(sp, oop_playlist_uri, required=False)[0] if oop_playlist_uri else set()
+    events, summary = measure_week(best_tracks, weekly_keys, oop_keys, week_no)
+    summary = {**summary, "playlist_tracks": len(weekly_items),
+               "match_ratio": round(best_ratio, 4)}
+    write_week(week_no, events, summary, scan_id=best_id, playlist_uri=playlist_uri,
                source=source)
     return summary
 
@@ -359,8 +471,15 @@ def coverage_state(history, playlists, cov, min_tracks=MIN_WEEK_TRACKS) -> dict:
 
     backlog = []
     if unmeasured and valid:
-        anchor_week = weeklies[0]["week_number"]       # newest week OVERALL ↔ newest valid scan
-        anchor_end = valid[0]["_end"]                   # (stable even if the newest week is measured)
+        # A Week#N playlist is closed from the PREVIOUS week's scan (user's fixed
+        # routine), so at any moment there is one MORE scan than published playlist:
+        # the newest scan has not become a playlist yet. Anchoring "newest week ↔
+        # newest scan" therefore shifts every proposal by a week and pairs each week
+        # with an unrelated scan — the 2026-08-22 bug. Step the anchor back one week.
+        # This only has to be CLOSE: measure_and_write verifies the pairing by content
+        # and self-corrects to a neighbouring scan if this guess is off.
+        anchor_week = weeklies[0]["week_number"]       # newest week OVERALL
+        anchor_end = valid[0]["_end"] - datetime.timedelta(days=7)
         oldest_end = valid[-1]["_end"]
         used = set()
         for p in unmeasured:

@@ -75,6 +75,9 @@ def measure(request: Request, body: MeasureReq):
     sp = get_spotify_client(request)
     if not body.links:
         raise HTTPException(400, "No weeks to measure.")
+    # The scan index lets measure_and_write verify the proposed link against the
+    # playlist's actual contents and fall back to a neighbouring scan if it is wrong.
+    history = scanner.get_history_index()
     out, remaining, start = [], [], time.time()
     for i, lk in enumerate(body.links):
         if time.time() - start > 20.0:
@@ -82,8 +85,14 @@ def measure(request: Request, body: MeasureReq):
             break
         try:
             summary = release.measure_and_write(sp, lk.week_number, lk.playlist_uri,
-                                                lk.scan_id, lk.oop_playlist_uri, source="weekly")
+                                                lk.scan_id, lk.oop_playlist_uri,
+                                                source="weekly", history=history)
             out.append({"week_number": lk.week_number, "ok": True, **summary})
+        except (release.NoMatchingScan, release.PlaylistUnreadable) as e:
+            # NOT an error to bury: the week is deliberately left unmeasured rather
+            # than recorded as an all-missed week built on the wrong denominator.
+            out.append({"week_number": lk.week_number, "ok": False, "skipped": True,
+                        "error": str(e)})
         except Exception as e:
             out.append({"week_number": lk.week_number, "ok": False, "error": str(e)})
     return {"measured": out, "remaining": remaining, "done": not remaining}

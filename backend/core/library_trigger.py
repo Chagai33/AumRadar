@@ -32,6 +32,18 @@ def _write_starting_state():
     })
 
 
+def _clear_starting_state():
+    """Undo _write_starting_state after a trigger that never reached the Job."""
+    try:
+        storage.save_json(STATE_FILE, {
+            "is_running": False, "status": "error", "phase": None,
+            "pulled": 0, "total": 0, "songs": 0, "liked_seen": 0,
+            "current": "Could not start the library job.", "logs": [], "heartbeat": 0,
+        })
+    except Exception:
+        logger.warning("could not roll back the library 'starting' state", exc_info=True)
+
+
 def _job_configured() -> bool:
     """True when the Service knows which Cloud Run Job to launch (set in prod)."""
     return bool(os.getenv("LIBRARY_JOB_NAME") and os.getenv("GOOGLE_CLOUD_PROJECT"))
@@ -65,7 +77,16 @@ def trigger_library_job(mode: str, sp=None, background_tasks=None):
     _write_starting_state()
 
     if _job_configured():
-        _run_cloud_job(mode)
+        try:
+            _run_cloud_job(mode)
+        except Exception:
+            # The 'starting' state was written a moment ago for the UI. If the trigger
+            # itself fails there will never be a Job to clear it, and every later start
+            # is refused as "already running" — so roll it back before surfacing the
+            # error. (Seen 2026-08-22: the Job existed but the service account lacked
+            # run.developer on it, and the UI sat on "Starting…" indefinitely.)
+            _clear_starting_state()
+            raise
         return {"status": "job_triggered", "mode": mode}
 
     # A single one of the two vars set is almost certainly a PROD misconfig

@@ -48,6 +48,15 @@ ARTISTS_CACHE_FILE = f"{CACHE_DIR}/artists_cache.json"
 EXCLUDED_PLAYLIST_TYPES = ("outofplaylist",)
 
 HEARTBEAT_ALIVE_SEC = 120
+STARTING_GRACE_SEC = 300   # 'starting' is written the instant the Job is triggered, before
+                           # the container exists, so it needs a longer window than a live
+                           # run's heartbeat — a Cloud Run cold start can take a couple of
+                           # minutes. It must still EXPIRE though: if the trigger itself
+                           # fails (e.g. the 403 on 2026-08-22 before the Job had
+                           # run.developer), the state is left claiming a run that will
+                           # never start, and _reject_if_running then refuses every future
+                           # start with 409 — permanently wedged, since nothing else clears
+                           # it.
 PAGE_LIMIT = 100                # Spotify max page size for playlist items
 LIKED_PAGE_LIMIT = 50           # Spotify max page size for /me/tracks
 CHECKPOINT_EVERY = 40           # persist the accumulator every N fully-pulled playlists
@@ -121,13 +130,16 @@ class LibraryEngine:
         print(f"[library] {msg}", flush=True)
 
     def get_status(self) -> dict:
-        """The frontend's single source of truth. Downgrades a run whose heartbeat
-        went stale (>120s) to not-running so a crashed Job can't wedge the UI —
-        the same staleness rule Bootstrap and the scanner use."""
+        """The frontend's single source of truth. Downgrades a run whose heartbeat went
+        stale to not-running so a crashed Job can't wedge the UI — the same staleness rule
+        Bootstrap and the scanner use. A run still in 'starting' gets a longer window
+        (the container may not exist yet) but is NOT exempt: exempting it meant a trigger
+        that failed before the Job ever booted left is_running=True forever."""
         st = storage.load_json(STATE_FILE) or {"is_running": False, "status": "idle"}
-        if st.get("is_running") and st.get("status") != "starting":
+        if st.get("is_running"):
             hb = st.get("heartbeat", 0)
-            if not hb or (time.time() - hb) > HEARTBEAT_ALIVE_SEC:
+            limit = STARTING_GRACE_SEC if st.get("status") == "starting" else HEARTBEAT_ALIVE_SEC
+            if not hb or (time.time() - hb) > limit:
                 st["is_running"] = False
                 if st.get("status") not in ("done", "error", "stopped"):
                     st["status"] = "interrupted"

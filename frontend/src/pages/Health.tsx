@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import { NavBar } from '../components/NavBar';
+import { LibraryPanel, LibraryBadge, useLibraryCounts } from '../components/LibraryPanel';
+import type { PanelArtist } from '../components/LibraryPanel';
 
 // Artist Health Engine — Stage 3b: the tuning dashboard. Drag the knobs, watch the
 // 🔴🟠🟡🟢 band counts move live (server recompute < 1s on the in-memory songs — no
@@ -92,6 +94,10 @@ export const Health: React.FC = () => {
   const [q, setQ] = useState('');
   const [why, setWhy] = useState<Why | null>(null);
   const [whyBusy, setWhyBusy] = useState(false);
+  // Library layer (display-only): what do I actually HAVE of this artist — liked
+  // songs and playlist appearances. Never feeds the RANK on this page.
+  const { lib } = useLibraryCounts();
+  const [libPanel, setLibPanel] = useState<PanelArtist | null>(null);
 
   const [applying, setApplying] = useState(false);
   const [applyRes, setApplyRes] = useState<any>(null);
@@ -302,6 +308,10 @@ export const Health: React.FC = () => {
                     </div>
                     <div className="text-xs text-zinc-500 hidden sm:block w-24 text-center">{(r.followers || 0).toLocaleString()} followers</div>
                     <div className="text-sm text-center w-16"><b>{r.entered}</b> <span className="text-zinc-500 text-xs">songs</span></div>
+                    <LibraryBadge c={lib.counts[r.artist_uri]} ready={lib.ready} />
+                    <button onClick={e => { e.stopPropagation(); setLibPanel({ uri: r.artist_uri, name: r.artist, image: r.image, genres: r.genres }); }}
+                      title="What do I have of theirs? (liked songs + playlists)"
+                      className="text-base w-7 text-center text-zinc-500 hover:text-sky-400">🔍</button>
                     <span className="flex items-center gap-1 text-xs w-14 justify-end">
                       {r.disposition === 'protect' && <span title="Protected">🛡️</span>}
                       {r.disposition === 'remove' && <span title="Force-remove">🚫</span>}
@@ -408,6 +418,24 @@ export const Health: React.FC = () => {
                     </div>
                   )}
 
+                  {/* what you actually HAVE of them — separate from what makes the score */}
+                  <div className="flex items-center gap-3 p-3 rounded bg-zinc-800/60">
+                    <div className="text-xs font-bold text-zinc-500 uppercase tracking-wide">In your library</div>
+                    {lib.ready ? (
+                      <>
+                        <span className="text-sm">
+                          <b className={lib.counts[why.artist_uri]?.liked ? 'text-pink-400' : 'text-zinc-600'}>♥ {lib.counts[why.artist_uri]?.liked || 0}</b>
+                          <span className="text-zinc-600 mx-2">·</span>
+                          <b className={lib.counts[why.artist_uri]?.playlists ? 'text-sky-400' : 'text-zinc-600'}>♪ {lib.counts[why.artist_uri]?.playlists || 0}</b>
+                        </span>
+                        <button onClick={() => setLibPanel({ uri: why.artist_uri, name: why.artist, image: why.image, genres: why.genres })}
+                          className="ms-auto px-3 py-1 text-xs rounded bg-sky-800 hover:bg-sky-700">Show the songs</button>
+                      </>
+                    ) : (
+                      <span className="text-xs text-amber-400">not built yet — use “Build library data” on Cleanup</span>
+                    )}
+                  </div>
+
                   <ManualEditor why={why} onSaved={onManualSaved} />
                 </div>
 
@@ -420,6 +448,7 @@ export const Health: React.FC = () => {
           </div>
         </div>
       )}
+      {libPanel && <LibraryPanel artists={[libPanel]} onClose={() => setLibPanel(null)} />}
     </div>
   );
 };

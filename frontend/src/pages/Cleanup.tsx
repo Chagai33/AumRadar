@@ -1,6 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { NavBar } from '../components/NavBar';
+import { LibraryPanel, LibraryBadge, useLibraryCounts } from '../components/LibraryPanel';
+import type { PanelArtist } from '../components/LibraryPanel';
+import { LibraryControl } from '../components/LibraryControl';
 
 interface Candidate {
   artist_uri: string;
@@ -44,6 +47,17 @@ export const Cleanup: React.FC = () => {
   const [progress, setProgress] = useState<{ done: number; total: number; wait: number } | null>(null);
   const cancelRef = useRef(false);
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+  // Library layer (display-only): ♥ liked songs / ♪ playlist appearances per artist.
+  const { lib, reloadLib } = useLibraryCounts();
+  const [panel, setPanel] = useState<{ artists: PanelArtist[]; index: number } | null>(null);
+  const asPanelArtist = (c: Candidate): PanelArtist =>
+    ({ uri: c.artist_uri, name: c.artist, image: c.image, genres: c.genres });
+  const inspectOne = (c: Candidate) => setPanel({ artists: [asPanelArtist(c)], index: 0 });
+  // Review the marked batch one by one — the point of marking them in the first place.
+  const reviewSelected = () => {
+    const list = (data?.candidates || []).filter(c => selected.has(c.artist_uri)).map(asPanelArtist);
+    if (list.length) setPanel({ artists: list, index: 0 });
+  };
 
   const loadCandidates = async () => {
     try {
@@ -197,6 +211,11 @@ export const Cleanup: React.FC = () => {
         <button onClick={clearSel} className="px-2.5 py-1 text-xs rounded bg-zinc-800 hover:bg-zinc-700">Clear selection</button>
       </div>
 
+      {/* library index: one pull answers ♥/♪ for every artist at once (see LibraryControl) */}
+      <div className="px-5 py-2.5 border-b border-zinc-800">
+        <LibraryControl onDone={reloadLib} />
+      </div>
+
       {/* result banner */}
       {result && (
         <div className={`mx-5 mt-3 p-3 rounded text-sm ${result.kind === 'error' ? 'bg-red-900/40 text-red-300' : 'bg-zinc-800'}`}>
@@ -246,6 +265,10 @@ export const Cleanup: React.FC = () => {
               </div>
               <div className="text-xs text-zinc-500 hidden sm:block w-24 text-center">{(c.followers || 0).toLocaleString()} followers</div>
               <div className="text-sm text-center w-24"><b>{c.releases}</b> <span className="text-zinc-500">releases</span></div>
+              <LibraryBadge c={lib.counts[c.artist_uri]} ready={lib.ready} />
+              <button onClick={e => { e.stopPropagation(); inspectOne(c); }}
+                title="What do I have of theirs? (liked songs + playlists)"
+                className="text-base w-8 text-center text-zinc-500 hover:text-sky-400">🔍</button>
               <span className={`text-xs text-white px-2 py-0.5 rounded ${tierColor[c.tier] || 'bg-zinc-600'}`}>{c.tier}</span>
               <button onClick={e => { e.stopPropagation(); toggleProtect(c.artist_uri, !isProt); }}
                 title={isProt ? 'Unprotect' : 'Protect from removal'}
@@ -264,6 +287,11 @@ export const Cleanup: React.FC = () => {
       <div className="fixed bottom-0 inset-x-0 z-20 bg-[#181818] border-t border-zinc-800 px-5 py-3 flex items-center gap-3">
         <span className="text-sm"><b className="text-emerald-400">{selected.size}</b> selected for removal</span>
         <div className="ms-auto flex gap-2">
+          <button onClick={reviewSelected} disabled={selected.size === 0}
+            title="Step through the marked artists and see what you have of each before removing"
+            className="px-4 py-2 text-sm rounded bg-sky-800 hover:bg-sky-700 disabled:opacity-40">
+            🔍 Review {selected.size || ''}
+          </button>
           <button onClick={() => post('dry', '/api/cleanup/dry-run', { uris: Array.from(selected) })}
             disabled={!!busy || selected.size === 0}
             className="px-4 py-2 text-sm rounded bg-zinc-700 hover:bg-zinc-600 disabled:opacity-40">
@@ -275,6 +303,12 @@ export const Cleanup: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* library detail panel */}
+      {panel && (
+        <LibraryPanel artists={panel.artists} startIndex={panel.index}
+          onClose={() => setPanel(null)} selected={selected} onToggleSelect={toggle} />
+      )}
 
       {/* confirm modal */}
       {confirmOpen && (

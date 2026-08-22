@@ -40,6 +40,10 @@ export const Cleanup: React.FC = () => {
   const [followCount, setFollowCount] = useState<number | null>(null);
   const [countBusy, setCountBusy] = useState(false);
   const [tierFilter, setTierFilter] = useState<string>('all');
+  // "What do I actually HAVE of them?" as a filter, not just a badge. The whole point
+  // of building the index is the macro cut: an artist with nothing of yours is the safe
+  // end of the list, one with liked songs is not — and that is invisible one row at a time.
+  const [libFilter, setLibFilter] = useState<'all' | 'liked' | 'playlists' | 'nothing'>('all');
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState<string>('');
   const [result, setResult] = useState<any>(null);
@@ -82,11 +86,35 @@ export const Cleanup: React.FC = () => {
   const shown = useMemo(() => {
     if (!data) return [];
     const q = search.trim().toLowerCase();
+    const libOk = (uri: string) => {
+      if (libFilter === 'all' || !lib.ready) return true;
+      const n = lib.counts[uri];
+      const liked = n?.liked || 0, pl = n?.playlists || 0;
+      if (libFilter === 'liked') return liked > 0;
+      if (libFilter === 'playlists') return pl > 0;
+      return liked === 0 && pl === 0;              // 'nothing'
+    };
     return data.candidates.filter(c =>
+      libOk(c.artist_uri) &&
       (tierFilter === 'all' || c.tier === tierFilter) &&
       (!q || (c.artist || '').toLowerCase().includes(q) || (c.genres || '').toLowerCase().includes(q))
     );
-  }, [data, tierFilter, search]);
+  }, [data, tierFilter, search, libFilter, lib]);
+
+  // Counts across the WHOLE candidate list (not the current view) so the pills read as
+  // "how big is this bucket", which is the number the cut decision is made on.
+  const libCounts = useMemo(() => {
+    const all = data?.candidates || [];
+    let liked = 0, pl = 0, nothing = 0;
+    for (const c of all) {
+      const n = lib.counts[c.artist_uri];
+      const l = n?.liked || 0, p = n?.playlists || 0;
+      if (l > 0) liked++;
+      if (p > 0) pl++;
+      if (l === 0 && p === 0) nothing++;
+    }
+    return { all: all.length, liked, playlists: pl, nothing };
+  }, [data, lib]);
 
   const tierCounts = useMemo(() => {
     const m: Record<string, number> = {};
@@ -216,6 +244,33 @@ export const Cleanup: React.FC = () => {
         <LibraryControl onDone={reloadLib} />
       </div>
 
+      {/* Cut by what you HAVE of them. Only once the index exists — before that these
+          pills would all filter on zeroes and quietly hide everything. */}
+      {lib.ready && (
+        <div className="px-5 py-2.5 flex flex-wrap items-center gap-2 border-b border-zinc-800 bg-zinc-900/40">
+          <span className="text-[11px] font-bold text-zinc-500 uppercase tracking-wide me-1">In your library</span>
+          {([
+            ['all', 'All', libCounts.all, ''],
+            ['liked', '♥ Liked', libCounts.liked, 'text-pink-400'],
+            ['playlists', '♪ In playlists', libCounts.playlists, 'text-sky-400'],
+            ['nothing', 'Nothing of theirs', libCounts.nothing, 'text-zinc-400'],
+          ] as const).map(([key, label, n, tone]) => (
+            <button key={key} onClick={() => setLibFilter(key as any)}
+              className={`px-2.5 py-1 text-xs rounded ${libFilter === key ? 'bg-white text-black' : `bg-zinc-800 hover:bg-zinc-700 ${tone}`}`}>
+              {label} <span className="opacity-60">({n})</span>
+            </button>
+          ))}
+          {libFilter === 'nothing' && (
+            <span className="text-[11px] text-zinc-500 ms-1">
+              No liked song and no playlist appearance — nothing of theirs is in your library.
+            </span>
+          )}
+          {libFilter === 'liked' && (
+            <span className="text-[11px] text-pink-300/70 ms-1">You liked at least one of their songs.</span>
+          )}
+        </div>
+      )}
+
       {/* result banner */}
       {result && (
         <div className={`mx-5 mt-3 p-3 rounded text-sm ${result.kind === 'error' ? 'bg-red-900/40 text-red-300' : 'bg-zinc-800'}`}>
@@ -265,7 +320,7 @@ export const Cleanup: React.FC = () => {
               </div>
               <div className="text-xs text-zinc-500 hidden sm:block w-24 text-center">{(c.followers || 0).toLocaleString()} followers</div>
               <div className="text-sm text-center w-24"><b>{c.releases}</b> <span className="text-zinc-500">releases</span></div>
-              <LibraryBadge c={lib.counts[c.artist_uri]} ready={lib.ready} />
+              <LibraryBadge c={lib.counts[c.artist_uri]} ready={lib.ready} onOpen={() => inspectOne(c)} />
               <button onClick={e => { e.stopPropagation(); inspectOne(c); }}
                 title="What do I have of theirs? (liked songs + playlists)"
                 className="text-base w-8 text-center text-zinc-500 hover:text-sky-400">🔍</button>

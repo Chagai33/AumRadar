@@ -42,16 +42,27 @@ export const fmtGenerated = (g?: string) => {
 /** The per-row cell: ❤️ liked · 🎵 distinct playlists. Zeroes are dimmed rather than
  *  hidden — "I checked and there is nothing" is exactly the signal that makes an
  *  unfollow safe, so it must be visibly different from "not indexed yet" (blank). */
-export const LibraryBadge: React.FC<{ c?: LibCount; ready: boolean }> = ({ c, ready }) => {
+export const LibraryBadge: React.FC<{ c?: LibCount; ready: boolean; onOpen?: () => void }> =
+({ c, ready, onOpen }) => {
   if (!ready) return <span className="w-20 text-center text-[11px] text-zinc-700">—</span>;
   const liked = c?.liked || 0, pl = c?.playlists || 0;
-  return (
-    <span className="w-20 text-center text-xs whitespace-nowrap"
-      title={`${liked} liked song${liked === 1 ? '' : 's'} · in ${pl} playlist${pl === 1 ? '' : 's'}`}>
+  const body = (
+    <>
       <b className={liked ? 'text-pink-400' : 'text-zinc-600'}>♥{liked}</b>
       <span className="text-zinc-700 mx-1">·</span>
       <b className={pl ? 'text-sky-400' : 'text-zinc-600'}>♪{pl}</b>
-    </span>
+    </>
+  );
+  const label = `${liked} liked song${liked === 1 ? '' : 's'} · in ${pl} playlist${pl === 1 ? '' : 's'}`;
+  // The numbers are the obvious thing to click, so they must BE the control. As a bare
+  // span the click fell through to the row and silently ticked the artist's checkbox
+  // instead of opening anything — the opposite of what the badge invites.
+  if (!onOpen) return <span className="w-20 text-center text-xs whitespace-nowrap" title={label}>{body}</span>;
+  return (
+    <button onClick={e => { e.stopPropagation(); onOpen(); }} title={`${label} — click to see the songs`}
+      className="w-20 text-center text-xs whitespace-nowrap rounded py-0.5 hover:bg-zinc-700/70 hover:ring-1 hover:ring-zinc-600 transition">
+      {body}
+    </button>
   );
 };
 

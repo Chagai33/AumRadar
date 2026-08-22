@@ -308,7 +308,8 @@ export const Health: React.FC = () => {
                     </div>
                     <div className="text-xs text-zinc-500 hidden sm:block w-24 text-center">{(r.followers || 0).toLocaleString()} followers</div>
                     <div className="text-sm text-center w-16"><b>{r.entered}</b> <span className="text-zinc-500 text-xs">songs</span></div>
-                    <LibraryBadge c={lib.counts[r.artist_uri]} ready={lib.ready} />
+                    <LibraryBadge c={lib.counts[r.artist_uri]} ready={lib.ready}
+                      onOpen={() => setLibPanel({ uri: r.artist_uri, name: r.artist, image: r.image, genres: r.genres })} />
                     <button onClick={e => { e.stopPropagation(); setLibPanel({ uri: r.artist_uri, name: r.artist, image: r.image, genres: r.genres }); }}
                       title="What do I have of theirs? (liked songs + playlists)"
                       className="text-base w-7 text-center text-zinc-500 hover:text-sky-400">🔍</button>

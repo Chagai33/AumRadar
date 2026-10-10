@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import datetime
 from .auth import get_spotify_client, get_app_client
-from ..core.scanner import scanner
+from ..core.scanner import scanner, export_record, scan_display_name
 from ..core.job_trigger import trigger_scan_job
 
 router = APIRouter()
@@ -135,7 +135,8 @@ async def run_automation_headless(background_tasks: BackgroundTasks):
         # Determine Playlist Name with date range
         start = settings_dict.get('start_date', '')
         end   = settings_dict.get('end_date', '')
-        playlist_name = f"Weekly Radar {start} – {end}" if start and end else "Weekly Radar"
+        playlist_name = scan_display_name(
+            start, end, bool(settings_dict.get('selected_artist_ids')))
         
         result = trigger_scan_job(
             "scheduled",
@@ -270,6 +271,37 @@ def delete_history_scan(scan_id: str):
 class ExportRequest(BaseModel):
     name: str
     uris: List[str]
+    # Which scan this playlist belongs to. Omitted = the scan currently shown in
+    # the banner (the live state's scan_id).
+    scan_id: Optional[str] = None
+
+
+class AttachExportRequest(BaseModel):
+    """Link a playlist that already exists in Spotify to a scan — the only way to
+    fill in a scan whose export happened outside the app (or before the app
+    started recording it)."""
+    playlist_url: str
+    scan_id: Optional[str] = None
+
+
+def _resolve_scan_id(scan_id: Optional[str]) -> Optional[str]:
+    """None/'current' → the scan the banner is showing."""
+    if scan_id and scan_id != "current":
+        return scan_id
+    return scanner.get_status().get("scan_id")
+
+
+def _playlist_id_from_url(url: str) -> Optional[str]:
+    """Accept a share link, a spotify: uri, or a bare id."""
+    raw = (url or "").strip()
+    if not raw:
+        return None
+    if "spotify:playlist:" in raw:
+        raw = raw.split("spotify:playlist:", 1)[1]
+    elif "/playlist/" in raw:
+        raw = raw.split("/playlist/", 1)[1]
+    pid = raw.split("?", 1)[0].split("/", 1)[0].strip()
+    return pid if len(pid) == 22 and pid.isalnum() else None
 
 @router.post("/export")
 def export_playlist(req: ExportRequest, sp=Depends(get_spotify_client)):
@@ -288,6 +320,40 @@ def export_playlist(req: ExportRequest, sp=Depends(get_spotify_client)):
             batch = req.uris[i:i+100]
             sp.playlist_add_items(playlist['id'], batch)
             
-        return {"status": "success", "playlist_url": playlist['external_urls']['spotify']}
+        # Persist the result instead of only handing it to the browser: the
+        # completion banner and the history row are the only places the user can
+        # find this link again.
+        target = _resolve_scan_id(req.scan_id)
+        record = export_record("success", "manual", playlist, len(req.uris))
+        written = scanner.record_export(record, target)
+        return {"status": "success",
+                "playlist_url": playlist['external_urls']['spotify'],
+                "recorded_on": written}
     except Exception as e:
+        target = _resolve_scan_id(req.scan_id)
+        scanner.record_export(export_record("failed", "manual", error=e), target)
         return {"status": "error", "message": str(e)}
+
+
+@router.post("/export/attach")
+def attach_export(req: AttachExportRequest, sp=Depends(get_spotify_client)):
+    """Attach an already-existing Spotify playlist to a scan. Reads the playlist
+    back from Spotify so the stored name and track count are the real ones, not
+    whatever was typed."""
+    pid = _playlist_id_from_url(req.playlist_url)
+    if not pid:
+        raise HTTPException(status_code=400,
+                            detail="Not a Spotify playlist link, uri or id")
+    target = _resolve_scan_id(req.scan_id)
+    if not target:
+        raise HTTPException(status_code=400, detail="No scan to attach this playlist to")
+    try:
+        pl = sp.playlist(pid, fields="id,name,external_urls,tracks(total)")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not read that playlist: {e}")
+    record = export_record("success", "attached", pl,
+                           ((pl.get("tracks") or {}).get("total") or 0))
+    written = scanner.record_export(record, target)
+    if not written.get("in_history"):
+        raise HTTPException(status_code=404, detail=f"No scan {target} in history")
+    return {"status": "success", "export": record, "recorded_on": written}

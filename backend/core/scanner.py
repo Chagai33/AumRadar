@@ -28,6 +28,37 @@ AUTO_RESUME_FILE = f"{CACHE_DIR}/auto_resume.json"
 # (they are separate processes, so an in-memory flag can't cross over).
 STOP_REQUEST_FILE = f"{CACHE_DIR}/scan_stop_request.json"
 
+# A scan with nothing exported yet. Explicit, so the UI can tell "never tried"
+# apart from "tried and failed".
+NO_EXPORT = {"status": "none"}
+
+
+def scan_display_name(start: str, end: str, partial: bool = False) -> str:
+    """ONE formula for a scan's human name — and for the auto-export playlist name,
+    so the completion banner and the playlist in Spotify can never disagree."""
+    base = f"Weekly Radar {start} – {end}" if start and end else "Weekly Radar"
+    return f"{base} [SEL]" if partial else base
+
+
+def export_record(status: str, source: str, playlist: dict = None,
+                  track_count: int = 0, error=None) -> dict:
+    """The single record shape every export path writes and the UI reads.
+    status: success | failed | none   ·   source: auto | manual | attached"""
+    rec = {
+        "status": status,
+        "source": source,
+        "at": datetime.datetime.now().isoformat(),
+        "track_count": track_count,
+    }
+    if playlist:
+        rec["playlist_id"] = playlist.get("id")
+        rec["playlist_name"] = playlist.get("name")
+        rec["playlist_url"] = (playlist.get("external_urls") or {}).get("spotify")
+    if error:
+        rec["error"] = str(error)[:300]
+    return rec
+
+
 class AdvancedEngine:
     def __init__(self):
         self.state = {
@@ -253,6 +284,15 @@ class AdvancedEngine:
         self.state["results_count"] = 0
         self.state["logs"] = []
         self.state["partial_scan"] = False
+        # Identity of THIS scan, so the completion banner can name it. scan_id is
+        # filled in by _save_to_history once the scan actually produces a row.
+        self.state["start_date"] = settings.get("start_date", "")
+        self.state["end_date"] = settings.get("end_date", "")
+        self.state["scan_name"] = scan_display_name(
+            settings.get("start_date", ""), settings.get("end_date", ""),
+            bool(settings.get("selected_artist_ids")))
+        self.state["scan_id"] = None
+        self.state["export"] = dict(NO_EXPORT)
         self.state.pop("error", None)
         self.state.pop("rate_limit_until", None)
         self.state.pop("blocked_until", None)
@@ -626,10 +666,18 @@ class AdvancedEngine:
                     for j in range(0, len(uris), 100):
                         sp.playlist_add_items(pl['id'], uris[j:j+100])
                     self.log(f"SUCCESS: Auto-exported {len(export_tracks)} tracks to '{auto_export_name}'")
+                    self.record_export(export_record("success", "auto", pl,
+                                                     len(export_tracks)))
                 else:
                     self.log("No tracks to export after album exclusion.")
+                    self.record_export(export_record(
+                        "failed", "auto",
+                        error="No tracks left to export after album exclusion."))
             except Exception as exp:
                 self.log(f"ERROR: Auto-export failed: {exp}")
+                # The scan itself still counts as completed — but the banner now
+                # says the export blew up instead of staying silent about it.
+                self.record_export(export_record("failed", "auto", error=exp))
 
         self.state["results_count"] = len(results_buffer)
         self.state["status"] = "completed"
@@ -664,6 +712,12 @@ class AdvancedEngine:
         self.state["current_artist"] = f"Resuming from {start_index}/{total}"
         self.state["logs"] = []
         self.state["partial_scan"] = bool(settings.get('selected_artist_ids'))
+        self.state["start_date"] = settings.get("start_date", "")
+        self.state["end_date"] = settings.get("end_date", "")
+        self.state["scan_name"] = scan_display_name(
+            settings.get("start_date", ""), settings.get("end_date", ""),
+            bool(settings.get('selected_artist_ids')))
+        self.state["export"] = dict(NO_EXPORT)
         self.state.pop("error", None)
         self.state.pop("rate_limit_until", None)
         self.state.pop("blocked_until", None)
@@ -842,6 +896,9 @@ class AdvancedEngine:
             index.insert(0, {
                 "id": scan_id,
                 "created_at": datetime.datetime.now().isoformat(),
+                "name": scan_display_name(settings.get('start_date', ''),
+                                          settings.get('end_date', ''),
+                                          bool(selected_ids)),
                 "start_date": settings.get('start_date', ''),
                 "end_date": settings.get('end_date', ''),
                 "track_count": len(tracks),
@@ -849,6 +906,8 @@ class AdvancedEngine:
                 "selected_artist_count": len(selected_ids) if selected_ids else None,
                 "album_types": settings.get('album_types', []),
                 "completed": completed,
+                # Filled in by record_export() once an export actually happens.
+                "export": dict(self.state.get("export") or NO_EXPORT),
             })
 
             # Rotate: drop oldest entries beyond the limit
@@ -857,9 +916,49 @@ class AdvancedEngine:
             index = index[:MAX_HISTORY]
 
             storage.save_json(HISTORY_INDEX_FILE, index)
+            # The export that runs right after finalize must land on THIS row,
+            # and the Service must be able to find the id in the shared state.
+            self.state["scan_id"] = scan_id
+            self._save_state()
             self.log(f"Saved to history ({scan_id}, {len(tracks)} tracks)")
+            return scan_id
         except Exception as e:
             self.log(f"Warning: could not save to history: {e}")
+            return None
+
+    def _write_export_to_history(self, scan_id: str, record: dict) -> bool:
+        """Stamp the export record on one history row. Best-effort: a missing row
+        must never turn a finished scan into a failure."""
+        if not scan_id:
+            return False
+        try:
+            index = storage.load_json(HISTORY_INDEX_FILE, [])
+            for entry in index:
+                if entry.get("id") == scan_id:
+                    entry["export"] = record
+                    storage.save_json(HISTORY_INDEX_FILE, index)
+                    return True
+        except Exception as e:
+            self.log(f"Warning: could not write export to history: {e}")
+        return False
+
+    def record_export(self, record: dict, scan_id: str = None) -> dict:
+        """Persist ONE export record to both places the UI reads: the live scan
+        state (the completion banner) and the matching history row (the history
+        list). Called from the Service too, so the state is re-read from storage
+        first — the Service and the scan Job are separate processes and writing
+        our own in-memory copy would clobber whatever the other one wrote. The
+        heartbeat is deliberately left as-is: an export is not a sign of life."""
+        target = scan_id or self.state.get("scan_id")
+        persisted = storage.load_json(SCAN_STATE_FILE) or {}
+        # Only the banner of the scan being exported may change. A record for an
+        # older scan goes to history only.
+        if persisted and (not scan_id or persisted.get("scan_id") == scan_id):
+            persisted["export"] = record
+            storage.save_json(SCAN_STATE_FILE, persisted)
+            self.state["export"] = record
+        in_history = self._write_export_to_history(target, record)
+        return {"scan_id": target, "in_history": in_history}
 
     def get_history_index(self):
         return storage.load_json(HISTORY_INDEX_FILE, [])

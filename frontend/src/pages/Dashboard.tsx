@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Search, Calendar, Play, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save, Layers, X, Check, Trash2 } from 'lucide-react';
+import { Search, Calendar, Play, Filter, Clock, AlertTriangle, Settings, RefreshCw, Save, Layers, X, Check, Trash2, ExternalLink, Link2 } from 'lucide-react';
 import { NavBar } from '../components/NavBar';
 import { motion, AnimatePresence } from 'framer-motion';
 import clsx from 'clsx';
@@ -24,9 +24,25 @@ interface Track {
     explicit: boolean;
 }
 
+// One export record, written by the backend for every export path (auto on a
+// scheduled scan, the manual Export button, or a playlist attached after the
+// fact). 'none' means nothing was ever exported — not the same as a failure.
+interface ExportInfo {
+    status: 'success' | 'failed' | 'none';
+    source?: 'auto' | 'manual' | 'attached';
+    playlist_name?: string;
+    playlist_url?: string;
+    playlist_id?: string;
+    track_count?: number;
+    at?: string;
+    error?: string;
+}
+
 interface HistoryEntry {
     id: string;
     created_at: string;
+    name?: string;          // absent on scans recorded before names existed
+    export?: ExportInfo;
     start_date: string;
     end_date: string;
     track_count: number;
@@ -47,7 +63,19 @@ interface ScanStatus {
     retry_after?: number;
     logs?: string[];
     partial_scan?: boolean;
+    scan_id?: string | null;
+    scan_name?: string;
+    start_date?: string;
+    end_date?: string;
+    export?: ExportInfo;
 }
+
+// Same formula as scan_display_name() in backend/core/scanner.py, used only as a
+// fallback for scans recorded before the name was stored.
+const scanName = (start?: string, end?: string, partial?: boolean): string => {
+    const base = start && end ? `Weekly Radar ${start} – ${end}` : 'Weekly Radar';
+    return partial ? `${base} [SEL]` : base;
+};
 
 interface CheckpointInfo {
     exists: boolean;
@@ -565,6 +593,38 @@ export const Dashboard: React.FC = () => {
         }
     };
 
+    // Re-read the two places an export record lives, so the banner and the
+    // history list stop disagreeing the moment an export happens.
+    const refreshExportState = async () => {
+        try {
+            const { data } = await axios.get('/api/status');
+            setScanStatus(data);
+        } catch { /* ignore */ }
+        try {
+            const res = await axios.get('/api/history');
+            setScanHistory(res.data);
+            setViewingHistory(prev => prev
+                ? (res.data.find((h: HistoryEntry) => h.id === prev.id) || prev)
+                : prev);
+        } catch { /* ignore */ }
+    };
+
+    // Link a playlist that already exists in Spotify to this scan — the only way
+    // to fill in an export that happened outside the app.
+    const handleAttachPlaylist = async (scanId?: string | null) => {
+        const url = prompt("Paste the Spotify playlist link for this scan:");
+        if (!url) return;
+        try {
+            await axios.post('/api/export/attach', {
+                playlist_url: url,
+                scan_id: scanId || null,
+            });
+            await refreshExportState();
+        } catch (e: any) {
+            alert("Could not attach that playlist: " + (e.response?.data?.detail || e.message));
+        }
+    };
+
     const handleExport = async () => {
         if (results.length === 0) return;
 
@@ -626,9 +686,15 @@ export const Dashboard: React.FC = () => {
                 return;
             }
 
-            const res = await axios.post('/api/export', { name, uris });
+            const res = await axios.post('/api/export', {
+                name, uris,
+                // Attach the record to the scan being exported, not to whatever
+                // scan happens to be live.
+                scan_id: viewingHistory ? viewingHistory.id : (scanStatus.scan_id || null),
+            });
 
             if (res.data.status === 'success') {
+                await refreshExportState();
                 if (confirm("Playlist created successfully! Open in Spotify?")) {
                     window.open(res.data.playlist_url, '_blank');
                 }
@@ -868,25 +934,67 @@ export const Dashboard: React.FC = () => {
                     <motion.div
                         initial={{ opacity: 0, y: -20 }}
                         animate={{ opacity: 1, y: 0 }}
-                        className="bg-green-900/20 border border-[#1DB954]/40 p-4 rounded-xl mb-8 flex items-center justify-between shadow-lg backdrop-blur-sm"
+                        className="bg-green-900/20 border border-[#1DB954]/40 p-4 rounded-xl mb-8 flex items-start justify-between shadow-lg backdrop-blur-sm"
                     >
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-start gap-3">
                             <div className="bg-[#1DB954]/20 p-2 rounded-full">
                                 <Check className="w-5 h-5 text-[#1DB954]" />
                             </div>
                             <div>
-                                <h3 className="font-bold text-white text-lg">Scan Completed</h3>
+                                <h3 className="font-bold text-white text-lg">
+                                    {scanStatus.scan_name
+                                        || scanName(scanStatus.start_date, scanStatus.end_date, scanStatus.partial_scan)}
+                                </h3>
                                 <p className="text-gray-400 text-sm">
-                                    {results.length === 0
-                                        ? "No new releases found in the selected date range."
-                                        : `Found ${results.length} new releases.`
+                                    Scan completed · {results.length === 0
+                                        ? "no new releases in the selected date range"
+                                        : `${results.length} new releases`
                                     }
+                                    {scanStatus.scan_id && (
+                                        <span className="text-gray-600"> · {scanStatus.scan_id}</span>
+                                    )}
                                 </p>
+                                {/* Spotify export: exactly one of exported / failed / not exported */}
+                                {scanStatus.export?.status === 'success' ? (
+                                    <p className="text-sm mt-1.5 flex items-center gap-1.5 flex-wrap">
+                                        <span className="text-[#1DB954]">Exported to Spotify:</span>
+                                        <a
+                                            href={scanStatus.export.playlist_url}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="text-white underline decoration-[#1DB954]/60 hover:decoration-white inline-flex items-center gap-1"
+                                        >
+                                            {scanStatus.export.playlist_name || 'open playlist'}
+                                            <ExternalLink className="w-3.5 h-3.5" />
+                                        </a>
+                                        {!!scanStatus.export.track_count && (
+                                            <span className="text-gray-500">
+                                                ({scanStatus.export.track_count} tracks{scanStatus.export.source === 'attached' ? ', linked manually' : ''})
+                                            </span>
+                                        )}
+                                    </p>
+                                ) : scanStatus.export?.status === 'failed' ? (
+                                    <p className="text-sm mt-1.5 text-red-400 flex items-center gap-1.5">
+                                        <AlertTriangle className="w-4 h-4 shrink-0" />
+                                        Export failed: {scanStatus.export.error || 'unknown error'}
+                                    </p>
+                                ) : (
+                                    <p className="text-sm mt-1.5 text-gray-500 flex items-center gap-2 flex-wrap">
+                                        Not exported to Spotify.
+                                        <button
+                                            onClick={() => handleAttachPlaylist(scanStatus.scan_id)}
+                                            className="text-gray-300 hover:text-white underline inline-flex items-center gap-1"
+                                        >
+                                            <Link2 className="w-3.5 h-3.5" />
+                                            Link an existing playlist
+                                        </button>
+                                    </p>
+                                )}
                             </div>
                         </div>
                         <button
                             onClick={() => setScanStatus(prev => ({ ...prev, status: 'idle' }))}
-                            className="bg-[#282828] hover:bg-[#333] text-white px-3 py-1 rounded text-sm transition-colors border border-gray-700"
+                            className="bg-[#282828] hover:bg-[#333] text-white px-3 py-1 rounded text-sm transition-colors border border-gray-700 shrink-0"
                         >
                             Dismiss
                         </button>
@@ -1270,7 +1378,7 @@ export const Dashboard: React.FC = () => {
                         <div className="flex items-center gap-3 text-sm">
                             <Clock className="w-4 h-4 text-yellow-500 shrink-0" />
                             <span className="text-yellow-300 font-medium">
-                                {viewingHistory.start_date} → {viewingHistory.end_date}
+                                {viewingHistory.name || scanName(viewingHistory.start_date, viewingHistory.end_date, viewingHistory.partial_scan)}
                             </span>
                             <span className="text-yellow-700">·</span>
                             <span className="text-yellow-600">{viewingHistory.track_count} tracks</span>
@@ -1279,6 +1387,31 @@ export const Dashboard: React.FC = () => {
                             )}
                             {!viewingHistory.completed && (
                                 <span className="text-xs bg-orange-900/30 text-orange-400 border border-orange-700/30 px-1.5 py-0.5 rounded">Stopped</span>
+                            )}
+                            <span className="text-yellow-700">·</span>
+                            {viewingHistory.export?.status === 'success' && viewingHistory.export.playlist_url ? (
+                                <a
+                                    href={viewingHistory.export.playlist_url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-[#1DB954] hover:text-white underline inline-flex items-center gap-1"
+                                >
+                                    {viewingHistory.export.playlist_name || 'on Spotify'}
+                                    <ExternalLink className="w-3.5 h-3.5" />
+                                </a>
+                            ) : viewingHistory.export?.status === 'failed' ? (
+                                <span className="text-red-400 inline-flex items-center gap-1">
+                                    <AlertTriangle className="w-3.5 h-3.5" />
+                                    Export failed
+                                </span>
+                            ) : (
+                                <button
+                                    onClick={() => handleAttachPlaylist(viewingHistory.id)}
+                                    className="text-gray-500 hover:text-white underline inline-flex items-center gap-1"
+                                >
+                                    <Link2 className="w-3.5 h-3.5" />
+                                    Not on Spotify — link a playlist
+                                </button>
                             )}
                         </div>
                         <button
@@ -1542,7 +1675,7 @@ export const Dashboard: React.FC = () => {
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex items-center gap-2 flex-wrap">
                                                     <span className="text-sm font-medium text-gray-200">
-                                                        {entry.start_date} → {entry.end_date}
+                                                        {entry.name || scanName(entry.start_date, entry.end_date, entry.partial_scan)}
                                                     </span>
                                                     {entry.partial_scan && (
                                                         <span className="text-[10px] bg-yellow-900/30 text-yellow-500 border border-yellow-800/40 px-1.5 py-0.5 rounded">SEL</span>
@@ -1550,10 +1683,37 @@ export const Dashboard: React.FC = () => {
                                                     {!entry.completed && (
                                                         <span className="text-[10px] bg-orange-900/20 text-orange-500 border border-orange-800/30 px-1.5 py-0.5 rounded">Stopped</span>
                                                     )}
+                                                    {entry.export?.status === 'success' && (
+                                                        <span className="text-[10px] bg-[#1DB954]/15 text-[#1DB954] border border-[#1DB954]/30 px-1.5 py-0.5 rounded">On Spotify</span>
+                                                    )}
+                                                    {entry.export?.status === 'failed' && (
+                                                        <span className="text-[10px] bg-red-900/20 text-red-400 border border-red-800/30 px-1.5 py-0.5 rounded">Export failed</span>
+                                                    )}
                                                 </div>
                                                 <div className="text-xs text-gray-600 mt-0.5">
                                                     {entry.track_count} tracks · {new Date(entry.created_at).toLocaleString()}
                                                 </div>
+                                                {/* The playlist this scan produced — or a way to point at one */}
+                                                {entry.export?.status === 'success' && entry.export.playlist_url ? (
+                                                    <a
+                                                        href={entry.export.playlist_url}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        onClick={(e) => e.stopPropagation()}
+                                                        className="text-xs text-gray-400 hover:text-white underline mt-1 inline-flex items-center gap-1 max-w-full truncate"
+                                                    >
+                                                        {entry.export.playlist_name || 'open playlist'}
+                                                        <ExternalLink className="w-3 h-3 shrink-0" />
+                                                    </a>
+                                                ) : (
+                                                    <button
+                                                        onClick={(e) => { e.stopPropagation(); handleAttachPlaylist(entry.id); }}
+                                                        className="text-xs text-gray-600 hover:text-gray-300 underline mt-1 inline-flex items-center gap-1"
+                                                    >
+                                                        <Link2 className="w-3 h-3" />
+                                                        Link a playlist
+                                                    </button>
+                                                )}
                                             </div>
                                             <button
                                                 onClick={(e) => deleteHistoryScan(entry.id, e)}

@@ -20,7 +20,7 @@ import time
 import asyncio
 
 from .core.storage_manager import storage
-from .core.scanner import scanner, SCAN_STATE_FILE, CHECKPOINT_FILE
+from .core.scanner import scanner, scan_display_name, SCAN_STATE_FILE, CHECKPOINT_FILE
 from .core.automation import automation_manager
 from .routers.auth import get_app_client
 from .routers.scan import resolve_dynamic_dates
@@ -101,7 +101,10 @@ async def _run():
         settings_dict = resolve_dynamic_dates(dict(config.get("settings", {})))
         start = settings_dict.get("start_date", "")
         end = settings_dict.get("end_date", "")
-        playlist_name = f"Weekly Radar {start} – {end}" if start and end else "Weekly Radar"
+        # Same formula as the scan's display name, so the banner and the playlist
+        # in Spotify always carry the identical name.
+        playlist_name = scan_display_name(
+            start, end, bool(settings_dict.get("selected_artist_ids")))
         _log(f"scheduled fresh scan {start}..{end} -> auto-export '{playlist_name}'")
         await scanner.scan_process(sp, settings_dict, app_sp, auto_export_name=playlist_name)
         return 0

@@ -946,9 +946,11 @@ export const Dashboard: React.FC = () => {
                                         || scanName(scanStatus.start_date, scanStatus.end_date, scanStatus.partial_scan)}
                                 </h3>
                                 <p className="text-gray-400 text-sm">
-                                    Scan completed · {results.length === 0
+                                    {/* The scan's OWN count, not results.length — the
+                                        grid below may be showing a historical scan. */}
+                                    Scan completed · {scanStatus.results_count === 0
                                         ? "no new releases in the selected date range"
-                                        : `${results.length} new releases`
+                                        : `${scanStatus.results_count} new releases`
                                     }
                                     {scanStatus.scan_id && (
                                         <span className="text-gray-600"> · {scanStatus.scan_id}</span>
@@ -974,9 +976,18 @@ export const Dashboard: React.FC = () => {
                                         )}
                                     </p>
                                 ) : scanStatus.export?.status === 'failed' ? (
-                                    <p className="text-sm mt-1.5 text-red-400 flex items-center gap-1.5">
-                                        <AlertTriangle className="w-4 h-4 shrink-0" />
-                                        Export failed: {scanStatus.export.error || 'unknown error'}
+                                    <p className="text-sm mt-1.5 text-red-400 flex items-center gap-x-2 gap-y-1 flex-wrap">
+                                        <span className="flex items-center gap-1.5">
+                                            <AlertTriangle className="w-4 h-4 shrink-0" />
+                                            Export failed: {scanStatus.export.error || 'unknown error'}
+                                        </span>
+                                        <button
+                                            onClick={() => handleAttachPlaylist(scanStatus.scan_id)}
+                                            className="text-gray-300 hover:text-white underline inline-flex items-center gap-1"
+                                        >
+                                            <Link2 className="w-3.5 h-3.5" />
+                                            Link an existing playlist
+                                        </button>
                                     </p>
                                 ) : (
                                     <p className="text-sm mt-1.5 text-gray-500 flex items-center gap-2 flex-wrap">
@@ -1400,10 +1411,14 @@ export const Dashboard: React.FC = () => {
                                     <ExternalLink className="w-3.5 h-3.5" />
                                 </a>
                             ) : viewingHistory.export?.status === 'failed' ? (
-                                <span className="text-red-400 inline-flex items-center gap-1">
+                                <button
+                                    onClick={() => handleAttachPlaylist(viewingHistory.id)}
+                                    className="text-red-400 hover:text-white underline inline-flex items-center gap-1"
+                                    title={viewingHistory.export.error || 'Export failed'}
+                                >
                                     <AlertTriangle className="w-3.5 h-3.5" />
-                                    Export failed
-                                </span>
+                                    Export failed — link a playlist
+                                </button>
                             ) : (
                                 <button
                                     onClick={() => handleAttachPlaylist(viewingHistory.id)}

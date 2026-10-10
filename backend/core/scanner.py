@@ -717,6 +717,9 @@ class AdvancedEngine:
         self.state["scan_name"] = scan_display_name(
             settings.get("start_date", ""), settings.get("end_date", ""),
             bool(settings.get('selected_artist_ids')))
+        # Drop the previous scan's id: until THIS run writes a history row there is
+        # no row to stamp, and a stale id would send an export to the wrong scan.
+        self.state["scan_id"] = None
         self.state["export"] = dict(NO_EXPORT)
         self.state.pop("error", None)
         self.state.pop("rate_limit_until", None)

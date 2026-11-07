@@ -348,9 +348,13 @@ MIN_MATCH = 0.6            # a scan is the playlist's source only if it CONTAINS
                            # built out of the scan); a wrong pairing measures ~0.0. The gate
                            # sits far from both so small gaps — a track pulled from Spotify,
                            # an ISRC that moved — never reject a genuine week.
-MAX_CANDIDATES = 10        # how many scans to try before giving up on a week. History
-                           # holds a handful of legitimate weekly scans, so this covers
-                           # all of them — the loop stops at the first exact match.
+# NO cap on how many scans a week is matched against: EVERY legitimate weekly scan in
+# history is a candidate. A cap of 10 (2026-08 → 2026-11-07) silently stopped at the ten
+# newest scans, so once history grew past ten, every week older than ~2.5 months read as
+# "no scan contains this playlist" although its scan sat right there at 100% (weeks
+# 324–326 on 2026-11-07). The loop stops at the first exact match, so the only cost of
+# trying them all is paid by a week that truly has no scan — one file load per scan,
+# cached per request.
 
 
 class NoMatchingScan(Exception):
@@ -393,7 +397,7 @@ def _candidate_scan_ids(proposed, history, week_no=None):
     for v in valid:
         if v["id"] not in out:
             out.append(v["id"])
-    return out[:MAX_CANDIDATES]
+    return out                                              # all of them — see above
 
 
 def measure_and_write(sp, week_no, playlist_uri, scan_id, oop_playlist_uri=None,

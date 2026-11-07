@@ -22,6 +22,7 @@ import datetime
 from typing import Optional
 
 from . import manual_store
+from . import release
 from .storage_manager import storage
 from .bootstrap import (score_songs, bootstrap, SONGS_FILE, ARTISTS_CACHE_FILE,
                         RECON_SNAPSHOT_FILE, HALF_LIFE_WEEKS, TYPE_WEIGHT, LEGACY_MULT)
@@ -43,7 +44,13 @@ DEFAULT_WEIGHTS = {
     "legacy": LEGACY_MULT,
     "bands": DEFAULT_BANDS,
     "candidate_bands": ["red"],
+    # The release gate (DESIGN: "silence is never a sin"): an artist in a candidate band
+    # becomes a candidate only after this many OWN releases in the measured /release
+    # weeks. 0 = off (the pre-2026-11 behaviour: every 🔴 was a candidate, 207 of 219
+    # of them artists who had released nothing at all).
+    "min_releases": 4,
 }
+DEFAULT_MIN_RELEASES = 4
 
 
 def _ts() -> str:
@@ -102,6 +109,8 @@ class HealthEngine:
         self._pl_stamp = None
         self._manual_cache = None          # {artist_uri: override record} — soft-prune: never auto-deleted
         self._manual_stamp = None
+        self._releases = None              # {artist_uri: own releases in measured weeks} (from /release)
+        self._releases_stamp = None
 
     # ─────────────────────────── cache management ──────────────────────────
     @staticmethod
@@ -167,6 +176,30 @@ class HealthEngine:
         self._pl_stamp = stamp
         return self._pl_meta
 
+    def _release_counts(self) -> dict:
+        """Own (primary, non-album) release counts per artist from the measured /release
+        weeks, keyed on coverage.json's mtime so a newly measured week is picked up and
+        a slider drag never re-reads the week files. No measured week → {} (every count
+        0 → the release gate admits nobody; see DEFAULT_WEIGHTS)."""
+        stamp = self._stamp(release.COVERAGE_FILE)
+        if self._releases is not None and stamp == self._releases_stamp:
+            return self._releases
+        if stamp is None:
+            self._releases, self._releases_stamp = {}, None
+            return self._releases
+        events, _weeks = release.aggregate_events()
+        self._releases = release.primary_release_counts(events)
+        self._releases_stamp = stamp
+        return self._releases
+
+    @staticmethod
+    def _min_releases(w) -> int:
+        v = getattr(w, "min_releases", None)
+        try:
+            return max(0, int(v)) if v is not None else DEFAULT_MIN_RELEASES
+        except (TypeError, ValueError):
+            return DEFAULT_MIN_RELEASES
+
     # ─────────────────────────── manual-layer (3ג) ─────────────────────────
     def _manual(self) -> dict:
         """The manual-override map, mtime-cached. Soft-prune is applied by the callers,
@@ -198,13 +231,17 @@ class HealthEngine:
         except Exception:
             return False
 
-    def _resolve(self, raw: float, bands, cand_bands, rec: dict) -> dict:
+    def _resolve(self, raw: float, bands, cand_bands, rec: dict,
+                 releases: int = 0, min_releases: int = 0) -> dict:
         """Fold the manual override onto a raw RANK → what the UI shows and what apply
         writes. Precedence (STAGE3.md §10.5/§12.4/§13.3):
           • score_floor LIFTS the effective rank (max(raw, floor)) — protects, never fakes.
-          • disposition 'remove'  → forced 🔴 AND always a candidate (overrides the floor).
+          • disposition 'remove'  → forced 🔴 AND always a candidate (overrides the floor
+            AND the release gate — a manual decision is final).
           • disposition 'protect' or an ACTIVE pin → never a candidate (placed by eff).
-          • else → normal banding; candidate iff its band is a chosen candidate band."""
+          • else → normal banding; candidate iff its band is a chosen candidate band AND
+            the artist has released at least `min_releases` own singles in the measured
+            /release weeks (the release gate; `gated` says the gate alone held it back)."""
         disp = rec.get("disposition") or "none"
         floor = rec.get("score_floor")
         eff, raised = raw, False
@@ -212,14 +249,16 @@ class HealthEngine:
             eff, raised = float(floor), True
         pinned = self._pin_active(rec.get("pinned_until"))
         if disp == "remove":
-            return {"effective": eff, "band": "red", "candidate": True,
+            return {"effective": eff, "band": "red", "candidate": True, "gated": False,
                     "disposition": disp, "raised": raised, "pinned": pinned}
         band = band_of(eff, bands)
         if disp == "protect" or pinned:
-            return {"effective": eff, "band": band, "candidate": False,
+            return {"effective": eff, "band": band, "candidate": False, "gated": False,
                     "disposition": disp, "raised": raised, "pinned": pinned}
-        return {"effective": eff, "band": band, "candidate": band in cand_bands,
-                "disposition": disp, "raised": raised, "pinned": pinned}
+        in_band = band in cand_bands
+        gated = in_band and releases < min_releases
+        return {"effective": eff, "band": band, "candidate": in_band and not gated,
+                "gated": gated, "disposition": disp, "raised": raised, "pinned": pinned}
 
     @staticmethod
     def _half_life(w) -> float:
@@ -238,7 +277,8 @@ class HealthEngine:
         read back (independent of the request model, which may carry paging extras)."""
         return {"half_life": w.half_life, "weekly": w.weekly, "outof": w.outof,
                 "other": w.other, "legacy": w.legacy, "bands": w.safe_bands(),
-                "candidate_bands": list(w.candidate_bands or ["red"])}
+                "candidate_bands": list(w.candidate_bands or ["red"]),
+                "min_releases": HealthEngine._min_releases(w)}
 
     # ─────────────────────────────── endpoints ─────────────────────────────
     def preview(self, w) -> dict:
@@ -250,19 +290,25 @@ class HealthEngine:
         manual = self._manual()
         bands = w.safe_bands()
         cand_bands = set(w.candidate_bands or [])
+        rel, min_rel = self._release_counts(), self._min_releases(w)
         counts = {b: 0 for b in BAND_NAMES}
-        candidates = expired = 0
+        candidates = expired = gated = 0
         for uri in followed:
             rec = manual.get(uri) or {}
-            r = self._resolve(scores.get(uri, {}).get("rank", 0.0), bands, cand_bands, rec)
+            r = self._resolve(scores.get(uri, {}).get("rank", 0.0), bands, cand_bands, rec,
+                              rel.get(uri, 0), min_rel)
             counts[r["band"]] += 1
             if r["candidate"]:
                 candidates += 1
+            if r["gated"]:
+                gated += 1
             if self._pin_expired(rec.get("pinned_until")):
                 expired += 1
         return {"counts": counts, "candidates": candidates, "followed": len(followed),
                 "current_week": self._current_week, "generated": self._songs_generated,
-                "bands": bands, "expired_locks": expired}
+                "bands": bands, "expired_locks": expired,
+                "gated": gated, "min_releases": min_rel,
+                "measured_weeks": len(release.load_coverage().get("weeks") or {}) if rel else 0}
 
     def ranked(self, w, offset: int = 0, limit: int = 100,
                band: Optional[str] = None) -> dict:
@@ -276,13 +322,14 @@ class HealthEngine:
         manual = self._manual()
         bands = w.safe_bands()
         cand_bands = set(w.candidate_bands or [])
+        rel, min_rel = self._release_counts(), self._min_releases(w)
         rows = []
         for uri, art in followed.items():
             sc = scores.get(uri)
             raw = sc["rank"] if sc else 0.0
             entered = sc["entered"] if sc else 0
             rec = manual.get(uri) or {}
-            r = self._resolve(raw, bands, cand_bands, rec)
+            r = self._resolve(raw, bands, cand_bands, rec, rel.get(uri, 0), min_rel)
             if band == "expired":                            # the "locks expired" queue (§12.5)
                 if not self._pin_expired(rec.get("pinned_until")):
                     continue
@@ -298,7 +345,9 @@ class HealthEngine:
             row = bootstrap._candidate_row(uri, art)
             row.update({"rank": round(r["effective"], 6), "raw_rank": round(raw, 6),
                         "entered": entered, "band": r["band"], "disposition": r["disposition"],
-                        "raised": r["raised"], "pinned": r["pinned"]})
+                        "raised": r["raised"], "pinned": r["pinned"],
+                        "releases": rel.get(uri, 0), "candidate": r["candidate"],
+                        "gated": r["gated"]})
             out.append(row)
         return {"total": total, "offset": offset, "limit": limit,
                 "count": len(out), "rows": out}
@@ -355,7 +404,9 @@ class HealthEngine:
                 entered += 1
         songs_out.sort(key=lambda r: r["contribution"], reverse=True)
         rec = self._manual().get(uri) or {}
-        r = self._resolve(raw, bands, set(w.candidate_bands or []), rec)
+        releases = self._release_counts().get(uri, 0)
+        r = self._resolve(raw, bands, set(w.candidate_bands or []), rec,
+                          releases, self._min_releases(w))
         base = bootstrap._candidate_row(uri, art)                # safe even when art == {}
         return {
             **{k: base[k] for k in ("artist_uri", "artist_id", "artist", "image",
@@ -363,6 +414,7 @@ class HealthEngine:
             "followed": uri in followed,
             "rank": round(raw, 6), "effective_rank": round(r["effective"], 6),
             "band": r["band"], "candidate": r["candidate"], "entered": entered,
+            "releases": releases, "gated": r["gated"], "min_releases": self._min_releases(w),
             "disposition": r["disposition"], "raised": r["raised"], "pinned": r["pinned"],
             "songs": songs_out,
             "playlists": sorted(playlists.values(),
@@ -381,10 +433,15 @@ class HealthEngine:
         bands = w.safe_bands()
         cand_bands = set(w.candidate_bands or ["red"])
         manual = self._manual()
-        candidates = [bootstrap._candidate_row(uri, art)
-                      for uri, art in followed.items()
-                      if self._resolve(scores.get(uri, {}).get("rank", 0.0), bands,
-                                       cand_bands, manual.get(uri) or {})["candidate"]]
+        rel, min_rel = self._release_counts(), self._min_releases(w)
+        candidates = []
+        for uri, art in followed.items():
+            r = self._resolve(scores.get(uri, {}).get("rank", 0.0), bands, cand_bands,
+                              manual.get(uri) or {}, rel.get(uri, 0), min_rel)
+            if r["candidate"]:
+                row = bootstrap._candidate_row(uri, art)
+                row["releases"] = rel.get(uri, 0)       # additive; no existing field changes
+                candidates.append(row)
 
         existing = storage.load_json(CANDIDATES_FILE)
         backup = None
@@ -396,7 +453,7 @@ class HealthEngine:
         storage.save_json(CANDIDATES_FILE, {
             "generated": gen, "threshold": 0,
             "window": (f"Health tuning · half-life {w.half_life}w · bands {bands} · "
-                       f"candidate {sorted(cand_bands)}"),
+                       f"candidate {sorted(cand_bands)} · min own releases {min_rel}"),
             "count": len(candidates), "candidates": candidates,
         })
         storage.save_json(WEIGHTS_FILE, self._weights_dict(w))

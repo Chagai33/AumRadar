@@ -21,7 +21,8 @@ from typing import List, Optional
 
 from .auth import get_spotify_client
 from ..core.bootstrap import HALF_LIFE_WEEKS, TYPE_WEIGHT, LEGACY_MULT
-from ..core.health import health, ColdStartError, DEFAULT_WEIGHTS, DEFAULT_BANDS, WEIGHTS_FILE
+from ..core.health import (health, ColdStartError, DEFAULT_WEIGHTS, DEFAULT_BANDS,
+                           DEFAULT_MIN_RELEASES, WEIGHTS_FILE)
 from ..core import manual_store
 from ..core.storage_manager import storage
 
@@ -39,6 +40,9 @@ class Weights(BaseModel):
     legacy: float = LEGACY_MULT
     bands: List[float] = list(DEFAULT_BANDS)
     candidate_bands: List[str] = ["red"]
+    # Release gate: own releases (in the measured /release weeks) an artist needs before
+    # a candidate band actually makes it a candidate. 0 = off.
+    min_releases: int = DEFAULT_MIN_RELEASES
 
     def type_weight(self) -> dict:
         return {"weekly": self.weekly, "outofplaylist": self.outof, "other": self.other}

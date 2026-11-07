@@ -217,6 +217,25 @@ def aggregate_events():
     return all_events, weeks
 
 
+def primary_release_counts(events, followed_uris=None) -> dict:
+    """PURE. {artist_uri: number of OWN (primary-role, non-album) releases} across the
+    measured weeks — the same count `release_quality` reports as `primary_releases`.
+
+    Health's "never entered" band is gated on this (DESIGN: silence is never a sin; an
+    artist is proposed for removal only after ~4 matured singles failed). With no week
+    measured yet every count is 0, so the gate yields ZERO candidates — by design: no
+    measurement, no removal."""
+    out = {}
+    for e in events:
+        if e.get("role") != "primary" or e.get("outcome") == "album":
+            continue
+        uri = e.get("artist_uri")
+        if not uri or (followed_uris is not None and uri not in followed_uris):
+            continue
+        out[uri] = out.get(uri, 0) + 1
+    return out
+
+
 # ───────────────────────────── Release Quality (3a) ────────────────────────────
 def release_quality(events, followed_uris, *, current_week, half_life=26.0,
                     secondary_weight=0.3, shadow_factor=0.05,

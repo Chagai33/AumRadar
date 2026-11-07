@@ -13,16 +13,18 @@ import type { PanelArtist } from '../components/LibraryPanel';
 
 interface Weights {
   half_life: number; weekly: number; outof: number; other: number; legacy: number;
-  bands: number[]; candidate_bands: string[];
+  bands: number[]; candidate_bands: string[]; min_releases: number;
 }
 interface Preview {
   counts: Record<string, number>; candidates: number; followed: number;
   current_week: number; generated: string; bands: number[]; expired_locks: number;
+  gated: number; min_releases: number; measured_weeks: number;
 }
 interface Row {
   artist_uri: string; artist_id: string; artist: string; image: string; genres: string;
   followers: number; rank: number; raw_rank: number; entered: number; band: string;
   spotify_url: string; raised?: boolean; pinned?: boolean; disposition?: string;
+  releases: number; candidate: boolean; gated: boolean;
 }
 interface Ranked { total: number; offset: number; limit: number; count: number; rows: Row[]; }
 interface Song {
@@ -36,12 +38,13 @@ interface Why {
   followers: number; spotify_url: string; followed: boolean; rank: number;
   effective_rank: number; band: string; entered: number; songs: Song[]; playlists: Playlist[];
   manual: Record<string, any>; disposition?: string; raised?: boolean; pinned?: boolean; candidate?: boolean;
+  releases: number; gated: boolean; min_releases: number;
 }
 interface Manual { disposition?: string; score_floor?: number; pinned_until?: string; notes?: string; tags?: string[]; }
 
 const DEFAULTS: Weights = {
   half_life: 26, weekly: 1, outof: 0.05, other: 0.05, legacy: 0.5,
-  bands: [0, 0.05, 0.5], candidate_bands: ['red'],
+  bands: [0, 0.05, 0.5], candidate_bands: ['red'], min_releases: 4,
 };
 
 // Ordered 🔴🟠🟡🟢 (STAGE3 §7.1). `boundary` describes the band given the 3 sliders.
@@ -59,6 +62,8 @@ const KNOBS: { key: keyof Weights; label: string; min: number; max: number; step
   { key: 'outof', label: 'Outofplaylist weight', min: 0, max: 1, step: 0.01 },
   { key: 'other', label: 'Other weight (manually included)', min: 0, max: 1, step: 0.01 },
   { key: 'legacy', label: 'Legacy multiplier (season 1)', min: 0, max: 1, step: 0.05 },
+  { key: 'min_releases', label: 'Own releases before a candidate', min: 0, max: 12, step: 1,
+    hint: 'An artist in a candidate band is proposed only after this many own singles in the measured 📆 weeks. Silence is never a reason to remove. 0 = off.' },
 ];
 
 function fmt(n: number): string {
@@ -308,6 +313,9 @@ export const Health: React.FC = () => {
                     </div>
                     <div className="text-xs text-zinc-500 hidden sm:block w-24 text-center">{(r.followers || 0).toLocaleString()} followers</div>
                     <div className="text-sm text-center w-16"><b>{r.entered}</b> <span className="text-zinc-500 text-xs">songs</span></div>
+                    <div className="text-sm text-center w-20" title="Own singles released in the measured 📆 weeks">
+                      <b className={r.gated ? 'text-zinc-500' : ''}>{r.releases}</b> <span className="text-zinc-500 text-xs">released</span>
+                    </div>
                     <LibraryBadge c={lib.counts[r.artist_uri]} ready={lib.ready}
                       onOpen={() => setLibPanel({ uri: r.artist_uri, name: r.artist, image: r.image, genres: r.genres })} />
                     <button onClick={e => { e.stopPropagation(); setLibPanel({ uri: r.artist_uri, name: r.artist, image: r.image, genres: r.genres }); }}
@@ -318,6 +326,7 @@ export const Health: React.FC = () => {
                       {r.disposition === 'remove' && <span title="Force-remove">🚫</span>}
                       {r.pinned && <span title="Pinned">📌</span>}
                       {r.raised && <span title="Score-floor raised">⬆️</span>}
+                      {r.gated && <span title={`Held back: fewer than ${weights.min_releases} own releases in the measured weeks`}>⏳</span>}
                     </span>
                     <span className={`text-xs text-white px-2 py-0.5 rounded ${chipOf[r.band]}`}>{fmt(r.rank)}</span>
                   </div>
@@ -344,6 +353,14 @@ export const Health: React.FC = () => {
           <span className="text-sm">
             <b className="text-red-400">{preview?.candidates?.toLocaleString() ?? 0}</b> candidates
             <span className="text-zinc-500"> (bands: {weights.candidate_bands.join(', ') || 'none'})</span>
+            {!!preview?.gated && (
+              <span className="text-zinc-500" title="In a candidate band, but with fewer own releases than the gate asks for">
+                {' '}· ⏳ {preview.gated.toLocaleString()} held back (&lt; {weights.min_releases} releases)
+              </span>
+            )}
+            {preview && weights.min_releases > 0 && !preview.measured_weeks && (
+              <span className="text-amber-400/90"> · no 📆 week measured yet — the release gate admits nobody</span>
+            )}
           </span>
           {manifestOpen && <span className="text-xs text-amber-400/90">⚠ an open cleanup run exists — Apply replaces its list</span>}
           {applyRes && !applyRes.error && (
@@ -382,7 +399,8 @@ export const Health: React.FC = () => {
                     {why.disposition === 'protect' && <div className="text-[11px] text-emerald-400 mt-1">🛡️ protected</div>}
                     {why.disposition === 'remove' && <div className="text-[11px] text-red-400 mt-1">🚫 force-remove</div>}
                     {why.pinned && <div className="text-[11px] text-amber-400 mt-1">📌 pinned</div>}
-                    <div className="text-[11px] text-zinc-500 mt-1">{why.entered} songs counted</div>
+                    <div className="text-[11px] text-zinc-500 mt-1">{why.entered} songs counted · {why.releases} own releases measured</div>
+                    {why.gated && <div className="text-[11px] text-zinc-400 mt-1">⏳ held back: fewer than {why.min_releases} own releases</div>}
                   </div>
                 </div>
 

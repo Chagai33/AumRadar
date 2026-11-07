@@ -13,24 +13,34 @@ import axios from 'axios';
 export interface LibCount { liked: number; playlists: number; songs: number; }
 export interface LibCounts { [artistUri: string]: LibCount; }
 
+export interface IgnoredPlaylist { playlist_uri: string; name?: string; tracks: number; }
 export interface LibraryState {
   ready: boolean;
   generated?: string;
   counts: LibCounts;
   stats?: { liked_songs?: number; songs?: number; artists?: number; playlists_scanned?: number };
+  // Playlists over the size cap (backup dumps) are left out of every count; the
+  // server says which ones so the page can show them.
+  max_playlist_size?: number | null;
+  ignored_playlists?: IgnoredPlaylist[];
 }
 
-/** Fetch the small counts map once per page. A missing index is not an error —
- *  it just means the badges stay blank until the first build. */
-export const useLibraryCounts = () => {
+/** The server's default cap: above every hand-curated playlist (the biggest weekly
+ *  is ~100 tracks, the biggest curated ~900), below every backup dump (6,700+). */
+export const DEFAULT_MAX_PLAYLIST_SIZE = 500;
+
+/** Fetch the small counts map once per page (and again when the size cap moves).
+ *  A missing index is not an error — it just means the badges stay blank until the
+ *  first build. */
+export const useLibraryCounts = (maxPlaylistSize: number = DEFAULT_MAX_PLAYLIST_SIZE) => {
   const [lib, setLib] = useState<LibraryState>({ ready: false, counts: {} });
   const reload = async () => {
     try {
-      const r = await axios.get('/api/library/counts');
+      const r = await axios.get('/api/library/counts', { params: { max_playlist_size: maxPlaylistSize } });
       setLib(r.data);
     } catch { setLib({ ready: false, counts: {} }); }
   };
-  useEffect(() => { reload(); }, []);
+  useEffect(() => { reload(); }, [maxPlaylistSize]);  // eslint-disable-line react-hooks/exhaustive-deps
   return { lib, reloadLib: reload };
 };
 
@@ -72,9 +82,11 @@ interface Detail {
   ready: boolean;
   generated?: string;
   liked: number; playlists: number; songs: number;
+  max_playlist_size?: number | null;
   rows: {
     track_id: string; name: string; liked: boolean; spotify_url?: string;
-    playlists: { playlist_uri: string; name?: string; type?: string; week_number?: number; spotify_url?: string }[];
+    playlists: { playlist_uri: string; name?: string; type?: string; week_number?: number; spotify_url?: string;
+                 tracks?: number | null; ignored?: boolean }[];
   }[];
 }
 
@@ -87,7 +99,8 @@ export const LibraryPanel: React.FC<{
   onClose: () => void;
   selected?: Set<string>;
   onToggleSelect?: (uri: string) => void;
-}> = ({ artists, startIndex = 0, onClose, selected, onToggleSelect }) => {
+  maxPlaylistSize?: number;
+}> = ({ artists, startIndex = 0, onClose, selected, onToggleSelect, maxPlaylistSize = DEFAULT_MAX_PLAYLIST_SIZE }) => {
   const [i, setI] = useState(Math.min(startIndex, Math.max(0, artists.length - 1)));
   const [d, setD] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(true);
@@ -99,12 +112,12 @@ export const LibraryPanel: React.FC<{
     if (!cur) return;
     let cancelled = false;
     setBusy(true); setErr(''); setD(null);
-    axios.get(`/api/library/artist/${encodeURIComponent(cur.uri)}`)
+    axios.get(`/api/library/artist/${encodeURIComponent(cur.uri)}`, { params: { max_playlist_size: maxPlaylistSize } })
       .then(r => { if (!cancelled) setD(r.data); })
       .catch(e => { if (!cancelled) setErr(e.response?.data?.detail || e.message); })
       .finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
-  }, [cur?.uri]);
+  }, [cur?.uri, maxPlaylistSize]);
 
   // Arrow keys walk the batch, Esc closes — reviewing 20 artists with the mouse is
   // the kind of thing that makes people stop reviewing.
@@ -211,8 +224,10 @@ export const LibraryPanel: React.FC<{
                       {r.playlists.length === 0 && <span className="text-[11px] text-zinc-600">not in any scanned playlist</span>}
                       {r.playlists.map(p => (
                         <a key={p.playlist_uri} href={p.spotify_url} target="_blank" rel="noreferrer"
+                          title={p.ignored ? `Not counted: ${p.tracks?.toLocaleString()} tracks — over the ${maxPlaylistSize.toLocaleString()}-track cap (backup dump)` : undefined}
                           className={`text-[11px] px-1.5 py-0.5 rounded hover:brightness-125 ${
-                            p.type === 'weekly' ? 'bg-emerald-900 text-emerald-300' : 'bg-indigo-900 text-indigo-300'}`}>
+                            p.ignored ? 'bg-zinc-800 text-zinc-500 line-through decoration-zinc-600'
+                              : p.type === 'weekly' ? 'bg-emerald-900 text-emerald-300' : 'bg-indigo-900 text-indigo-300'}`}>
                           {p.name || p.playlist_uri}
                         </a>
                       ))}
@@ -230,6 +245,7 @@ export const LibraryPanel: React.FC<{
         {d?.generated && (
           <div className="px-5 py-2 border-t border-zinc-800 text-[11px] text-zinc-600">
             Library index from {fmtGenerated(d.generated)} · Liked Songs + all playlists except Out Of Playlist
+            {d.max_playlist_size ? ` · playlists over ${d.max_playlist_size.toLocaleString()} tracks are shown struck through and not counted` : ''}
           </div>
         )}
       </div>

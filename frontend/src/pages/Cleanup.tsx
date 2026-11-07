@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import { NavBar } from '../components/NavBar';
-import { LibraryPanel, LibraryBadge, useLibraryCounts } from '../components/LibraryPanel';
+import { LibraryPanel, LibraryBadge, useLibraryCounts, DEFAULT_MAX_PLAYLIST_SIZE } from '../components/LibraryPanel';
 import type { PanelArtist } from '../components/LibraryPanel';
 import { LibraryControl } from '../components/LibraryControl';
 
@@ -44,6 +44,16 @@ export const Cleanup: React.FC = () => {
   // of building the index is the macro cut: an artist with nothing of yours is the safe
   // end of the list, one with liked songs is not — and that is invisible one row at a time.
   const [libFilter, setLibFilter] = useState<'all' | 'liked' | 'playlists' | 'nothing'>('all');
+  // Numeric cut on the same two numbers: "at most N liked songs" / "in at most M
+  // playlists" — the safe end of the list is where both are small. '' = no limit.
+  const [maxLiked, setMaxLiked] = useState<number | ''>('');
+  const [maxPlaylists, setMaxPlaylists] = useState<number | ''>('');
+  // Playlists over this many tracks (the backup dumps) are not counted at all.
+  const [maxPl, setMaxPl] = useState<number>(() => {
+    try { const v = Number(localStorage.getItem('cleanup.maxPlaylistSize')); return v > 0 ? v : DEFAULT_MAX_PLAYLIST_SIZE; }
+    catch { return DEFAULT_MAX_PLAYLIST_SIZE; }
+  });
+  useEffect(() => { try { localStorage.setItem('cleanup.maxPlaylistSize', String(maxPl)); } catch { /* ignore */ } }, [maxPl]);
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState<string>('');
   const [result, setResult] = useState<any>(null);
@@ -52,7 +62,7 @@ export const Cleanup: React.FC = () => {
   const cancelRef = useRef(false);
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
   // Library layer (display-only): ♥ liked songs / ♪ playlist appearances per artist.
-  const { lib, reloadLib } = useLibraryCounts();
+  const { lib, reloadLib } = useLibraryCounts(maxPl);
   const [panel, setPanel] = useState<{ artists: PanelArtist[]; index: number } | null>(null);
   const asPanelArtist = (c: Candidate): PanelArtist =>
     ({ uri: c.artist_uri, name: c.artist, image: c.image, genres: c.genres });
@@ -87,9 +97,12 @@ export const Cleanup: React.FC = () => {
     if (!data) return [];
     const q = search.trim().toLowerCase();
     const libOk = (uri: string) => {
-      if (libFilter === 'all' || !lib.ready) return true;
+      if (!lib.ready) return true;
       const n = lib.counts[uri];
       const liked = n?.liked || 0, pl = n?.playlists || 0;
+      if (maxLiked !== '' && liked > maxLiked) return false;
+      if (maxPlaylists !== '' && pl > maxPlaylists) return false;
+      if (libFilter === 'all') return true;
       if (libFilter === 'liked') return liked > 0;
       if (libFilter === 'playlists') return pl > 0;
       return liked === 0 && pl === 0;              // 'nothing'
@@ -99,7 +112,7 @@ export const Cleanup: React.FC = () => {
       (tierFilter === 'all' || c.tier === tierFilter) &&
       (!q || (c.artist || '').toLowerCase().includes(q) || (c.genres || '').toLowerCase().includes(q))
     );
-  }, [data, tierFilter, search, libFilter, lib]);
+  }, [data, tierFilter, search, libFilter, lib, maxLiked, maxPlaylists]);
 
   // Counts across the WHOLE candidate list (not the current view) so the pills read as
   // "how big is this bucket", which is the number the cut decision is made on.
@@ -113,8 +126,14 @@ export const Cleanup: React.FC = () => {
       if (p > 0) pl++;
       if (l === 0 && p === 0) nothing++;
     }
-    return { all: all.length, liked, playlists: pl, nothing };
-  }, [data, lib]);
+    // how many clear the numeric cut alone (independent of the pills / tier / search)
+    const numeric = all.filter(c => {
+      const n = lib.counts[c.artist_uri];
+      const l = n?.liked || 0, p = n?.playlists || 0;
+      return (maxLiked === '' || l <= maxLiked) && (maxPlaylists === '' || p <= maxPlaylists);
+    }).length;
+    return { all: all.length, liked, playlists: pl, nothing, numeric };
+  }, [data, lib, maxLiked, maxPlaylists]);
 
   const tierCounts = useMemo(() => {
     const m: Record<string, number> = {};
@@ -260,6 +279,31 @@ export const Cleanup: React.FC = () => {
               {label} <span className="opacity-60">({n})</span>
             </button>
           ))}
+          {/* numeric cut + the size cap that keeps backup dumps out of the count */}
+          <span className="basis-full h-0" />
+          <span className="text-[11px] text-zinc-500">at most</span>
+          <input type="number" min={0} value={maxLiked} placeholder="∞"
+            onChange={e => setMaxLiked(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
+            className="w-14 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-xs text-pink-300 text-center" />
+          <span className="text-[11px] text-pink-400">♥ liked</span>
+          <span className="text-[11px] text-zinc-500">· in at most</span>
+          <input type="number" min={0} value={maxPlaylists} placeholder="∞"
+            onChange={e => setMaxPlaylists(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
+            className="w-14 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-xs text-sky-300 text-center" />
+          <span className="text-[11px] text-sky-400">♪ playlists</span>
+          {(maxLiked !== '' || maxPlaylists !== '') && (
+            <span className="text-[11px] text-zinc-400">→ <b>{libCounts.numeric}</b> of {libCounts.all}
+              <button onClick={() => { setMaxLiked(''); setMaxPlaylists(''); }} className="ms-1.5 text-zinc-500 hover:text-white">✕</button>
+            </span>
+          )}
+          <span className="text-[11px] text-zinc-600 ms-2">· ignore playlists over</span>
+          <input type="number" min={0} step={50} value={maxPl}
+            onChange={e => setMaxPl(Math.max(0, Number(e.target.value)))}
+            className="w-16 bg-zinc-800 border border-zinc-700 rounded px-1.5 py-0.5 text-xs text-zinc-300 text-center" />
+          <span className="text-[11px] text-zinc-600"
+            title={(lib.ignored_playlists || []).map(p => `${p.name || p.playlist_uri} — ${p.tracks.toLocaleString()} tracks`).join('\n') || 'none'}>
+            tracks ({(lib.ignored_playlists || []).length} backup dump{(lib.ignored_playlists || []).length === 1 ? '' : 's'} ignored{maxPl === 0 ? ' — off' : ''})
+          </span>
           {libFilter === 'nothing' && (
             <span className="text-[11px] text-zinc-500 ms-1">
               No liked song and no playlist appearance — nothing of theirs is in your library.
@@ -361,7 +405,7 @@ export const Cleanup: React.FC = () => {
 
       {/* library detail panel */}
       {panel && (
-        <LibraryPanel artists={panel.artists} startIndex={panel.index}
+        <LibraryPanel artists={panel.artists} startIndex={panel.index} maxPlaylistSize={maxPl}
           onClose={() => setPanel(null)} selected={selected} onToggleSelect={toggle} />
       )}
 

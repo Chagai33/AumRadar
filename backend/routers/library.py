@@ -10,10 +10,12 @@ Read-only w.r.t. Spotify AND w.r.t. the scoring pipeline: this router never writ
 candidate, a weight, or a rank. Deleting cache/library_*.json returns the app to
 exactly its previous behaviour.
 """
+from typing import Optional
 from fastapi import APIRouter, Request, HTTPException, BackgroundTasks
 
 from .auth import get_spotify_client
-from ..core.library import library, RECON_SNAPSHOT_FILE, EXCLUDED_PLAYLIST_TYPES
+from ..core.library import (library, RECON_SNAPSHOT_FILE, EXCLUDED_PLAYLIST_TYPES,
+                            DEFAULT_MAX_PLAYLIST_SIZE)
 from ..core.library_trigger import trigger_library_job
 from ..core.storage_manager import storage
 
@@ -81,18 +83,21 @@ def status(request: Request):
 
 
 @router.get("/library/counts")
-def counts(request: Request):
+def counts(request: Request,
+           max_playlist_size: Optional[int] = DEFAULT_MAX_PLAYLIST_SIZE):
     """{artist_uri: {liked, playlists, songs}} for every followed artist that has
     anything in the library. Artists with nothing are simply absent — the client
-    treats a miss as zeros, which keeps this payload small."""
+    treats a miss as zeros, which keeps this payload small. `max_playlist_size`
+    leaves backup-dump playlists out of the count (0 = count everything)."""
     get_spotify_client(request)  # session-gate
-    return library.counts()
+    return library.counts(max_playlist_size)
 
 
 @router.get("/library/artist/{artist}")
-def artist(artist: str, request: Request):
+def artist(artist: str, request: Request,
+           max_playlist_size: Optional[int] = DEFAULT_MAX_PLAYLIST_SIZE):
     """The detail panel for ONE artist: every song of theirs in the library, each
     flagged liked / not and listing the playlists it sits in. Accepts a bare id, a
     uri, or an open.spotify.com link."""
     get_spotify_client(request)  # session-gate
-    return library.artist(artist)
+    return library.artist(artist, max_playlist_size)

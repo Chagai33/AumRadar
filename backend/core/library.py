@@ -42,6 +42,14 @@ CHECKPOINT_FILE = f"{CACHE_DIR}/library_checkpoint.json"
 STOP_REQUEST_FILE = f"{CACHE_DIR}/library_stop_request.json"
 
 RECON_SNAPSHOT_FILE = f"{CACHE_DIR}/recon_playlists.json"
+
+# Playlists bigger than this are NOT counted as "I have their song in a playlist".
+# Measured 2026-11-08: the four backup dumps (All 02/12/2022, AIO, All 04/2022,
+# Aum.Music All Playlists) hold 6,700–11,000 tracks each; every hand-curated playlist
+# is under ~900 and the biggest weekly is 106. A song sitting only in a backup dump
+# says nothing about wanting the artist, so the default cap sits above everything
+# curated and below every dump. Tunable per request (0 / None = count everything).
+DEFAULT_MAX_PLAYLIST_SIZE = 500
 ARTISTS_CACHE_FILE = f"{CACHE_DIR}/artists_cache.json"
 
 # The user's rule: everything EXCEPT Out Of Playlist. Weekly + other are both in.
@@ -116,6 +124,10 @@ class LibraryEngine:
         self._counts_stamp = None
         self._index = None             # the full detail payload
         self._index_stamp = None
+        self._recon_sizes = None           # {playlist_uri: track_count} from the Recon snapshot
+        self._recon_sizes_stamp = None
+        self._capped = None                # counts recomputed under a size cap
+        self._capped_key = None            # (index stamp, cap) the memo was built for
 
     # ────────────────────────── state / heartbeat ──────────────────────────
     def _save_state(self, st: dict):
@@ -346,7 +358,8 @@ class LibraryEngine:
         instead of the multi-MB detail one."""
         pl_meta = {pl.get("playlist_uri"): {"n": pl.get("name"), "t": pl.get("type"),
                                             "w": pl.get("week_number"),
-                                            "u": pl.get("spotify_url")}
+                                            "u": pl.get("spotify_url"),
+                                            "s": pl.get("track_count")}
                    for pl in playlists}
         artists: dict = {}
         for s in songs.values():
@@ -513,29 +526,109 @@ class LibraryEngine:
             self._index_stamp = stamp
         return self._index
 
-    def counts(self) -> dict:
-        """{artist_uri: {liked, playlists, songs}} for the whole followed set, plus
-        the generation stamp so the UI can say how old it is."""
-        payload = self._load_counts()
-        if not payload:
-            return {"ready": False, "counts": {}}
-        return {"ready": True, "generated": payload.get("generated"),
-                "stats": payload.get("stats") or {}, "counts": payload.get("counts") or {}}
+    # ───────────────────────── playlist-size cap (2026-11-08) ─────────────────────────
+    def _playlist_sizes(self, index: dict) -> dict:
+        """{playlist_uri: track_count}. From the index meta when it was built with sizes,
+        else from the Recon snapshot (mtime-cached). Unknown size → None (counted)."""
+        sizes = {u: m.get("s") for u, m in (index.get("playlists") or {}).items()}
+        if any(v is not None for v in sizes.values()):
+            return sizes
+        stamp = self._stamp(RECON_SNAPSHOT_FILE)
+        if self._recon_sizes is None or stamp != self._recon_sizes_stamp:
+            snap = storage.load_json(RECON_SNAPSHOT_FILE) or {}
+            self._recon_sizes = {p.get("playlist_uri"): p.get("track_count")
+                                 for p in snap.get("playlists") or []}
+            self._recon_sizes_stamp = stamp
+        return {u: self._recon_sizes.get(u) for u in sizes}
 
-    def artist(self, uri: str) -> dict:
+    @staticmethod
+    def _cap(max_playlist_size) -> Optional[int]:
+        try:
+            v = int(max_playlist_size) if max_playlist_size is not None else DEFAULT_MAX_PLAYLIST_SIZE
+        except (TypeError, ValueError):
+            v = DEFAULT_MAX_PLAYLIST_SIZE
+        return v if v > 0 else None
+
+    def _ignored(self, index: dict, cap: Optional[int]) -> dict:
+        """{playlist_uri: size} of every playlist the cap excludes."""
+        if cap is None:
+            return {}
+        return {u: sz for u, sz in self._playlist_sizes(index).items()
+                if isinstance(sz, (int, float)) and sz > cap}
+
+    @staticmethod
+    def _recount(rows, ignored: dict) -> dict:
+        """PURE. The {liked, playlists, songs} triple for one artist with the ignored
+        playlists taken out: a song that is not liked and sits only in ignored
+        playlists is not "something I have"."""
+        liked = pls = songs = 0
+        seen = set()
+        for r in rows:
+            kept = [p for p in (r.get("p") or []) if p not in ignored]
+            seen.update(kept)
+            if r.get("l"):
+                liked += 1
+            if r.get("l") or kept:
+                songs += 1
+        pls = len(seen)
+        return {"liked": liked, "playlists": pls, "songs": songs}
+
+    def counts(self, max_playlist_size=DEFAULT_MAX_PLAYLIST_SIZE) -> dict:
+        """{artist_uri: {liked, playlists, songs}} for the whole followed set, plus
+        the generation stamp so the UI can say how old it is. With a size cap the
+        counts are recomputed from the full index (memoised per index version + cap)
+        and the response names the playlists it ignored."""
+        cap = self._cap(max_playlist_size)
+        if cap is None:
+            payload = self._load_counts()
+            if not payload:
+                return {"ready": False, "counts": {}}
+            return {"ready": True, "generated": payload.get("generated"),
+                    "stats": payload.get("stats") or {}, "counts": payload.get("counts") or {},
+                    "max_playlist_size": None, "ignored_playlists": []}
+        index = self._load_index()
+        if not index:
+            return {"ready": False, "counts": {}}
+        key = (self._index_stamp, cap)
+        if self._capped_key != key:
+            ignored = self._ignored(index, cap)
+            pl_meta = index.get("playlists") or {}
+            counts = {}
+            for uri, rec in (index.get("artists") or {}).items():
+                c = self._recount(rec.get("rows") or [], ignored)
+                if c["liked"] or c["playlists"]:
+                    counts[uri] = c
+            self._capped = {
+                "ready": True, "generated": index.get("generated"),
+                "stats": index.get("stats") or {}, "counts": counts,
+                "max_playlist_size": cap,
+                "ignored_playlists": sorted(
+                    [{"playlist_uri": u, "name": (pl_meta.get(u) or {}).get("n"),
+                      "tracks": sz} for u, sz in ignored.items()],
+                    key=lambda x: -(x["tracks"] or 0)),
+            }
+            self._capped_key = key
+        return self._capped
+
+    def artist(self, uri: str, max_playlist_size=DEFAULT_MAX_PLAYLIST_SIZE) -> dict:
         """The per-artist panel: every song of theirs in the library, each with
         whether it is LIKED and which playlists it sits in. Playlist uris are
-        expanded to names/links here so the client stays dumb."""
+        expanded to names/links here so the client stays dumb. Playlists over the
+        size cap are still listed but flagged `ignored`, and the header counts leave
+        them out — the same numbers the list column shows."""
         payload = self._load_index()
         uri = normalize_uri(uri)
         if not payload:
             return {"ready": False, "artist_uri": uri, "liked": 0, "playlists": 0,
-                    "songs": 0, "rows": []}
+                    "songs": 0, "rows": [], "max_playlist_size": self._cap(max_playlist_size)}
         rec = (payload.get("artists") or {}).get(uri)
         pl_meta = payload.get("playlists") or {}
         if not rec:
             return {"ready": True, "generated": payload.get("generated"),
-                    "artist_uri": uri, "liked": 0, "playlists": 0, "songs": 0, "rows": []}
+                    "artist_uri": uri, "liked": 0, "playlists": 0, "songs": 0, "rows": [],
+                    "max_playlist_size": self._cap(max_playlist_size)}
+        cap = self._cap(max_playlist_size)
+        ignored = self._ignored(payload, cap)
         rows = []
         for r in rec.get("rows") or []:
             tid = r.get("i")
@@ -548,12 +641,15 @@ class LibraryEngine:
                                "name": (pl_meta.get(p) or {}).get("n"),
                                "type": (pl_meta.get(p) or {}).get("t"),
                                "week_number": (pl_meta.get(p) or {}).get("w"),
-                               "spotify_url": (pl_meta.get(p) or {}).get("u")}
+                               "spotify_url": (pl_meta.get(p) or {}).get("u"),
+                               "tracks": ignored.get(p),
+                               "ignored": p in ignored}
                               for p in (r.get("p") or [])],
             })
+        c = self._recount(rec.get("rows") or [], ignored)
         return {"ready": True, "generated": payload.get("generated"), "artist_uri": uri,
-                "liked": rec.get("liked", 0), "playlists": rec.get("playlists", 0),
-                "songs": rec.get("songs", 0), "rows": rows}
+                "liked": c["liked"], "playlists": c["playlists"], "songs": c["songs"],
+                "max_playlist_size": cap, "rows": rows}
 
 
 # Global instance (mirrors bootstrap / scanner / health).
